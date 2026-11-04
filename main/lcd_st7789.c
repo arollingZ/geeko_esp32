@@ -49,11 +49,26 @@ static const char *TAG = "LCD";
 #define LCD_MIRROR_Y        true
 #define LCD_OFFSET_X        1
 #define LCD_OFFSET_Y        26
-#define LCD_PIXEL_CLOCK_HZ  (40 * 1000 * 1000)
+#define LCD_PIXEL_CLOCK_HZ  (60 * 1000 * 1000)  /* 60MHz：缩短写帧窗口，对抗撕裂；不稳可降到 40MHz */
 #define LCD_BL_ACTIVE_LEVEL 1               /* 背光高电平点亮 */
 
-/* 填充时分块的行数：160 * 20 * 2 = 6400 字节，兼顾内存与效率 */
-#define LCD_CHUNK_ROWS      20
+/* ---------------- 抗撕裂（tearing）说明 ----------------
+ * ST7789 没有双缓冲，屏幕以约 60Hz 持续从显存扫描输出，而我们一边往里写。
+ * 写入追上扫描线时，屏幕上就会出现「上半屏新色 / 下半屏旧色」的分界线
+ * —— 这就是俗称的屏幕撕裂（写入与扫描在赛跑）。
+ *
+ * 缓解手段（按效果）：
+ *   1. 整帧一次传完，而不是分多块：块与块之间的命令/等待间隙正是撕裂最明显的地方。
+ *      整帧 160*80*2 = 25600 字节，@60MHz 约 3.4ms，远小于一个 16.7ms 的刷新周期。
+ *   2. 提高 SPI 时钟（LCD_PIXEL_CLOCK_HZ），线性缩短写入窗口。
+ *   3. 彻底消除：写帧前后关/开显示（LCD_FILL_DISPOFF_AROUND=1），但每帧会闪一下，
+ *      适合纯色测试，不适合做 UI。
+ * 更彻底的做法是接 TE 信号做垂直同步，但本板 TE 未引出，只能用上面这些软件手段。
+ */
+#define LCD_FILL_DISPOFF_AROUND  0   /* 1 = 写帧前后关/开显示（零撕裂但闪烁） */
+
+/* 填充缓冲：整屏 25600 字节，一次分配反复复用（不再每帧 malloc） */
+#define LCD_FILL_BUF_PIXELS  (LCD_H_RES * LCD_V_RES)
 
 /* 周期性刷屏任务参数 */
 #define LCD_TASK_STACK      3072
@@ -64,6 +79,7 @@ static esp_lcd_panel_io_handle_t s_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static bool s_inited = false;
 static TaskHandle_t s_wait_task = NULL;
+static uint16_t *s_fill_buf = NULL;
 
 /* draw_bitmap 是异步的（队列深度 4），填色复用一个缓冲区，
  * 必须等上一笔传输完成才能改写数据，否则会出现花屏。 */
@@ -113,35 +129,41 @@ esp_err_t lcd_fill_rect(int x, int y, int w, int h, uint16_t color)
         return ESP_OK;
     }
 
-    size_t cap = (size_t)w * LCD_CHUNK_ROWS * sizeof(uint16_t);
-    uint16_t *buf = heap_caps_malloc(cap, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (buf == NULL) {
-        ESP_LOGE(TAG, "fill buffer alloc failed (%u bytes)", (unsigned)cap);
-        return ESP_ERR_NO_MEM;
+    /* 整帧一次传完：缓冲区一次性分配好，之后反复复用 */
+    if (s_fill_buf == NULL) {
+        s_fill_buf = heap_caps_malloc((size_t)LCD_FILL_BUF_PIXELS * sizeof(uint16_t),
+                                      MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+        if (s_fill_buf == NULL) {
+            ESP_LOGE(TAG, "fill buffer alloc failed (%u bytes)",
+                     (unsigned)(LCD_FILL_BUF_PIXELS * sizeof(uint16_t)));
+            return ESP_ERR_NO_MEM;
+        }
     }
 
-    esp_err_t ret = ESP_OK;
+    size_t pixels = (size_t)w * h;
+    for (size_t i = 0; i < pixels; i++) {
+        s_fill_buf[i] = color;
+    }
+
     s_wait_task = xTaskGetCurrentTaskHandle();
 
-    for (int row = y; row < y + h; row += LCD_CHUNK_ROWS) {
-        int rows = (row + LCD_CHUNK_ROWS <= y + h) ? LCD_CHUNK_ROWS : (y + h - row);
-        size_t pixels = (size_t)w * rows;
-        for (size_t i = 0; i < pixels; i++) {
-            buf[i] = color;
-        }
-        ret = esp_lcd_panel_draw_bitmap(s_panel, x, row, x + w, row + rows, buf);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "draw_bitmap failed: %s", esp_err_to_name(ret));
-            break;
-        }
+#if LCD_FILL_DISPOFF_AROUND
+    /* 关显示期间写显存，扫描输出停止，绝不会出现撕裂（代价：每帧闪一下） */
+    esp_lcd_panel_disp_on_off(s_panel, false);
+#endif
+
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + h, s_fill_buf);
+    if (ret == ESP_OK) {
         ret = lcd_wait_color_done();
-        if (ret != ESP_OK) {
-            break;
-        }
+    } else {
+        ESP_LOGE(TAG, "draw_bitmap failed: %s", esp_err_to_name(ret));
     }
 
+#if LCD_FILL_DISPOFF_AROUND
+    esp_lcd_panel_disp_on_off(s_panel, true);
+#endif
+
     s_wait_task = NULL;
-    free(buf);
     return ret;
 }
 

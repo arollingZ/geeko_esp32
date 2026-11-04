@@ -196,7 +196,7 @@ I (492) APP: TF card is ready for use at /sdcard
 | `LCD_SWAP_XY` | `true` | 横屏（160 宽 × 80 高） |
 | `LCD_MIRROR_X/Y` | `false` / `true` | 上下或左右镜像 |
 | `LCD_OFFSET_X/Y` | `1` / `26` | 可见区域在控制器 RAM 中的偏移 |
-| `LCD_PIXEL_CLOCK_HZ` | 40 MHz | 线长或干扰大可降到 20 MHz |
+| `LCD_PIXEL_CLOCK_HZ` | 60 MHz | 缩短写帧窗口抗撕裂；不稳（花屏）降到 40/20 MHz |
 
 颜色用 `LCD_RGB565(r, g, b)` 宏构造（RGB565，传 MCU 原生 `uint16_t`，
 所以 `data_endian` 设为 `LCD_RGB_DATA_ENDIAN_LITTLE`）。
@@ -215,6 +215,22 @@ I (492) APP: TF card is ready for use at /sdcard
 - 长时间连续刷屏不花屏、不丢帧，即说明 SPI 通路与时序稳定；
 - 后续接入状态界面时，把 `lcd_sweep_task` 的刷新逻辑换成 UI 绘制即可。
 
+### 抗撕裂（tearing）
+
+刷屏时若看到「上半屏一种颜色、下半屏另一种颜色」并一闪而过，中间还夹一条黑线，
+这是 **屏幕撕裂（tearing）**，不是 bug，而是 ST7789 没有双缓冲导致的：
+屏幕以约 60Hz 持续从显存扫描输出，我们一边往里写，**写入追上扫描线**时就会出现这条分界。
+
+| 手段 | 做法 | 效果 |
+| ---- | ---- | ---- |
+| 整帧一次传完 | `lcd_fill_rect()` 用整屏缓冲（160×80×2 = 25600 字节）单次 `draw_bitmap`，不再分 4 块 | 分块之间的命令/等待间隙最容易被看到，消除它即大幅改善；整帧 @60MHz 约 3.4ms |
+| 提高 SPI 时钟 | `LCD_PIXEL_CLOCK_HZ` = 60MHz（不稳可降 40MHz） | 线性缩短写入窗口 |
+| 关显示写帧 | `LCD_FILL_DISPOFF_AROUND = 1` | **彻底无撕裂**，但每帧闪一下，只适合纯色测试 |
+| TE 垂直同步 | 硬件接 TE 引脚 | 最正统，但**本板 TE 未引出**，用不了 |
+
+当前默认：整帧传输 + 60MHz（撕裂窗口 ≈ 3.4ms / 16.7ms 一帧，肉眼基本不可见）。
+填充缓冲改为一次性分配、反复复用，不再每帧 `malloc/free`。
+
 ### 一次性纯色自检（联调用）
 
 `lcd_color_test()` 与刷屏任务分开：需人工诊断时在 `app_main` 里临时调用一次，
@@ -227,7 +243,8 @@ I (492) APP: TF card is ready for use at /sdcard
 | 「红」显示成蓝色 | R/B 通道颠倒 | `LCD_RGB_ORDER` 改成 RGB |
 | 黑变白、白变黑 | 反色配置反了 | `LCD_INVERT_COLOR` 取反 |
 | 边框缺一边 / 偏出屏幕 | 偏移或方向不对 | 调 `LCD_OFFSET_X/Y`、`LCD_MIRROR_*` |
-| 花屏、雪花 | 时钟太快 / 传输未同步 | 降 `LCD_PIXEL_CLOCK_HZ`；代码已用传输完成回调等待 |
+| 刷屏时上下半屏颜色不同、夹黑线，一闪而过 | **屏幕撕裂**（写入追上扫描线） | 已默认整帧传输 + 60MHz；仍明显就开 `LCD_FILL_DISPOFF_AROUND=1` |
+| 花屏、雪花 | 时钟太快 / 传输未同步 | 降 `LCD_PIXEL_CLOCK_HZ`（60→40→20）；代码已用传输完成回调等待 |
 
 ### 对外接口（`lcd_st7789.h`）
 
