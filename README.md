@@ -179,3 +179,8 @@ idf.py -p COMx flash monitor
 | 连上 `ESP32_DEMO` 但打不开网页、也不弹配网页 | 先「忘记网络」重连拿新 DHCP 租约（DNS=192.168.4.1）；手输 `http://192.168.4.1/`；别用 https 网址；安卓开了「私人 DNS」会绕过劫持，关掉或用 IP 直连 |
 | 门户页能开但点保存没反应 | 看串口是否有 `New credentials:` 日志；页面依赖 POST `/save`，用手机自带浏览器而非内置 WebView |
 | 反复重启 | 检查是否误开了 PSRAM 配置（`sdkconfig.defaults` 中相关项默认注释） |
+
+## 许可证
+
+[MIT License](LICENSE)，可自由使用、修改与分发，保留版权声明即可。
+
