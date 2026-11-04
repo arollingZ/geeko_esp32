@@ -4,6 +4,8 @@ idf_component_register(
          "wifi_mgr.c"
          "led_status.c"
          "lcd_st7789.c"
+         "lcd_ui.c"
+         "font8x16.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_spi
              esp_driver_sdspi

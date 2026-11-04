@@ -145,18 +145,47 @@ esp_err_t lcd_fill_rect(int x, int y, int w, int h, uint16_t color)
         s_fill_buf[i] = color;
     }
 
+    return lcd_flush(x, y, w, h, s_fill_buf);
+}
+
+esp_err_t lcd_flush(int x, int y, int w, int h, const uint16_t *buf)
+{
+    if (!s_inited) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (buf == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    /* 裁剪到屏幕范围内 */
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x + w > LCD_H_RES) {
+        w = LCD_H_RES - x;
+    }
+    if (y + h > LCD_V_RES) {
+        h = LCD_V_RES - y;
+    }
+    if (w <= 0 || h <= 0) {
+        return ESP_OK;
+    }
+
     s_wait_task = xTaskGetCurrentTaskHandle();
 
 #if LCD_FILL_DISPOFF_AROUND
-    /* 关显示期间写显存，扫描输出停止，绝不会出现撕裂（代价：每帧闪一下） */
     esp_lcd_panel_disp_on_off(s_panel, false);
 #endif
 
-    esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + h, s_fill_buf);
+    esp_err_t ret = esp_lcd_panel_draw_bitmap(s_panel, x, y, x + w, y + h, buf);
     if (ret == ESP_OK) {
         ret = lcd_wait_color_done();
     } else {
-        ESP_LOGE(TAG, "draw_bitmap failed: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "flush draw_bitmap failed: %s", esp_err_to_name(ret));
     }
 
 #if LCD_FILL_DISPOFF_AROUND
@@ -208,9 +237,10 @@ esp_err_t lcd_color_test(void)
     return ESP_OK;
 }
 
-/* 周期性刷屏任务：每 LCD_SWEEP_PERIOD_MS 换一种颜色整屏填充，循环往复。
- * 目的：验证 LCD 通路稳定（长时间连续刷屏不花屏、不丢帧），后续接入
- * 状态界面后可把这个任务换成真正的 UI 刷新。 */
+/* 周期刷屏测试：每 LCD_SWEEP_PERIOD_MS 换一种颜色整屏填充，循环往复。
+ * 仅在 APP_LCD_COLOR_TEST=1 时编译，用于验证 LCD 通路稳定（长时间连续
+ * 刷屏不花屏、不丢帧）。正常显示模式下由 lcd_ui 任务驱动屏幕。 */
+#if APP_LCD_COLOR_TEST
 typedef struct {
     uint16_t color;
     const char *name;
@@ -245,6 +275,7 @@ static void lcd_sweep_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(LCD_SWEEP_PERIOD_MS));
     }
 }
+#endif /* APP_LCD_COLOR_TEST */
 
 esp_err_t lcd_init(void)
 {
@@ -323,14 +354,18 @@ esp_err_t lcd_init(void)
              LCD_H_RES, LCD_V_RES, LCD_PIN_CS, LCD_PIN_DC, LCD_PIN_RST, LCD_PIN_BL,
              LCD_PIXEL_CLOCK_HZ / 1000000);
 
-    /* 起刷屏任务（与 wifi_mgr 一样：init 内部起任务，调用方不被阻塞） */
+#if APP_LCD_COLOR_TEST
+    /* 测试模式：起周期刷屏任务（与 wifi_mgr 一样，init 内部起任务，调用方不被阻塞） */
     if (xTaskCreate(lcd_sweep_task, "lcd_sweep", LCD_TASK_STACK, NULL,
                     LCD_TASK_PRIO, NULL) != pdPASS) {
         ESP_LOGE(TAG, "LCD sweep task create failed");
         return ESP_FAIL;
     }
-    ESP_LOGI(TAG, "color sweep started: %u colors, every %d ms",
+    ESP_LOGI(TAG, "color sweep test started: %u colors, every %d ms",
              (unsigned)LCD_SWEEP_COLOR_COUNT, LCD_SWEEP_PERIOD_MS);
+#else
+    ESP_LOGI(TAG, "color test disabled (APP_LCD_COLOR_TEST=0), UI task will drive the panel");
+#endif
 
     return ESP_OK;
 }
@@ -352,6 +387,12 @@ void lcd_backlight(bool on)
 esp_err_t lcd_fill_color(uint16_t color)
 {
     (void)color;
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t lcd_flush(int x, int y, int w, int h, const uint16_t *buf)
+{
+    (void)x; (void)y; (void)w; (void)h; (void)buf;
     return ESP_ERR_NOT_SUPPORTED;
 }
 

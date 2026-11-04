@@ -9,7 +9,7 @@
 | 1 | TF 卡数据读写 + 读写准确性验证 | ⏸ 暂时屏蔽（`APP_ENABLE_TF_CARD=0`，待 TF 卡到位后改回 1） |
 | 2 | WiFi 配网（Web 配网，凭据存 TF 卡/NVS） | ✅ 已完成 |
 | 3 | LED 指示灯（IO1，指示网络状态） | ✅ 已完成 |
-| 4 | LCD 显示（ST7789 80x160） | 🚧 初始化 + 周期刷屏任务已完成，文字/状态界面待做 |
+| 4 | LCD 显示（ST7789 80x160） | ✅ 已完成（时间 + 热点名，20fps） |
 
 功能开关集中在 `main/feature_config.h`，宏为 0 时对应功能被条件编译屏蔽，
 对外接口保留桩实现，调用方无需修改。
@@ -20,15 +20,25 @@
 geeko_esp32/
 ├── CMakeLists.txt          # 工程入口
 ├── sdkconfig.defaults      # 默认配置：esp32s3 / 16MB Flash / FatFS 长文件名
+├── tools/                  # PC 端开发脚本（不参与固件构建）
 └── main/
     ├── CMakeLists.txt
-    ├── feature_config.h    # 功能开关宏（TF 卡 / WiFi / LED / 后续 LCD）
+    ├── feature_config.h    # 功能开关宏（TF 卡 / WiFi / LED / LCD / 刷屏测试）
     ├── main.c              # app_main：1s 主循环非阻塞调度各功能
     ├── tf_card.c/.h        # TF 卡驱动：SPI 挂载、读写校验（当前屏蔽，桩实现）
     ├── wifi_mgr.c/.h       # WiFi 管理：SoftAP Web 配网、断线重连、外网验证
     ├── led_status.c/.h     # LED 状态指示：按网络状态闪烁（IO1）
-    └── lcd_st7789.c/.h     # LCD：ST7789 初始化、整屏/矩形填色、纯色自检
+    ├── lcd_st7789.c/.h     # LCD 底层：ST7789 初始化、填色、flush
+    ├── lcd_ui.c/.h         # LCD 界面：东八区时间 + 热点名，20fps
+    └── font8x16.c/.h       # 8x16 ASCII 点阵字库（由 tools 生成）
 ```
+
+`tools/` 下是开发期用的 PC 端脚本，不参与固件构建：
+
+| 脚本 | 用途 |
+| ---- | ---- |
+| `ttf2font.py` | 把 TTF 栅格化成 `main/font8x16.c`（纯标准库，无需 PIL） |
+| `preview_ui.py` | 解析生成的 C 字库，用 ASCII art 预览两行文字的实际排版 |
 
 ## 功能一：TF 卡读写与准确性验证
 
@@ -201,19 +211,46 @@ I (492) APP: TF card is ready for use at /sdcard
 颜色用 `LCD_RGB565(r, g, b)` 宏构造（RGB565，传 MCU 原生 `uint16_t`，
 所以 `data_endian` 设为 `LCD_RGB_DATA_ENDIAN_LITTLE`）。
 
-### 周期刷屏任务
+### 周期刷屏测试
 
-`lcd_init()` 与 `wifi_mgr_init()` 一样是**非阻塞**的：硬件初始化完成后内部创建
-`lcd_sweep` 任务，每 **3 秒**整屏换一种颜色，循环往复：
+`feature_config.h` 里的 **`APP_LCD_COLOR_TEST`** 决定 LCD 跑哪种模式：
+
+```c
+#define APP_LCD_COLOR_TEST   1   // 逐色刷屏测试（每 3s 换一色）
+#define APP_LCD_COLOR_TEST   0   // 正常运行显示界面（时间 + 热点名）—— 当前默认
+```
+
+设为 1 时，`lcd_init()` 内部创建 `lcd_sweep` 任务，每 **3 秒**整屏换一种颜色循环，
+用于验证屏幕与接线（颜色顺序、反色、偏移、撕裂）：
 
 ```
 红 → 绿 → 蓝 → 白 → 黑 → 黄 → 青 → 品红 → 红 → ...
 ```
 
-- 周期由 `LCD_SWEEP_PERIOD_MS` 控制（`lcd_st7789.c` 顶部）；
-- 串口每次刷屏打印 `LCD: sweep #N: <color>`，可据此确认任务在稳定运行；
-- 长时间连续刷屏不花屏、不丢帧，即说明 SPI 通路与时序稳定；
-- 后续接入状态界面时，把 `lcd_sweep_task` 的刷新逻辑换成 UI 绘制即可。
+串口每次打印 `LCD: sweep #N: <color>`。设为 0 时这个任务完全不编译（省 flash），
+屏幕由 `lcd_ui` 任务驱动。
+
+### 正常显示界面
+
+`APP_LCD_COLOR_TEST = 0` 时，`lcd_ui_init()` 启动界面任务，**每 50ms（20fps）**刷新一次：
+
+```
+                2026-11-04 16:13:26
+                   MyHomeWiFi
+```
+
+| 行 | 内容 | 说明 |
+| -- | ---- | ---- |
+| 第一行 | `年-月-日 时:分:秒` | **东八区（CST-8）**，通过 SNTP 自动对时 |
+| 第二行 | 当前连接的 WiFi 热点名 | 未配网时显示 `no wifi config`；超过 20 列截断加 `..` |
+
+时间来源是 **SNTP**（`ntp.aliyun.com`，时区 `CST-8`）。上电时 WiFi 往往还没连上，
+首次同步必然失败，所以未对时期间任务每 1.5s 重新发起一次同步（最多重试 10 分钟），
+对时成功前第一行显示 `NTP syncing...`，成功后不再变化。
+
+**字体是 8×16 ASCII 点阵**（95 个字符，1520 字节），由 `tools/ttf2font.py` 从
+Arial 栅格化生成，每行 20 个字符（160 / 8）。注意 **不支持中文**：含中文的 SSID
+会显示成 `?`（字库只覆盖 ASCII 32..126）。需要中文可以扩展字库，见文末说明。
 
 ### 抗撕裂（tearing）
 
@@ -250,11 +287,31 @@ I (492) APP: TF card is ready for use at /sdcard
 
 | 接口 | 说明 |
 | ---- | ---- |
-| `lcd_init()` | 初始化总线 + panel IO + ST7789 + 背光，并启动 3s 刷屏任务（非阻塞） |
+| `lcd_init()` | 初始化总线 + panel IO + ST7789 + 背光（按 `APP_LCD_COLOR_TEST` 决定是否起刷屏测试） |
 | `lcd_backlight(bool)` | 背光开关 |
 | `lcd_fill_color(color)` | 整屏填色 |
-| `lcd_fill_rect(x,y,w,h,color)` | 填矩形（自动裁剪，内部分块传输） |
+| `lcd_fill_rect(x,y,w,h,color)` | 填矩形（自动裁剪） |
+| `lcd_flush(x,y,w,h,buf)` | 把内存里的一块 RGB565 缓冲送到屏幕（UI 层用） |
 | `lcd_color_test()` | 一次性纯色 + 边框自检（人工诊断用，启动流程不调用） |
+| `lcd_ui_init()` | 启动 SNTP 对时 + 界面刷新任务（20fps） |
+
+### 重新生成字库 / 换成其他字体
+
+`tools/ttf2font.py` 只用 Python 标准库解析 TTF，不依赖 PIL：
+
+```bash
+python tools/ttf2font.py C:/Windows/Fonts/arial.ttf main/font8x16.c 14 12
+#                        <字体文件>                    <输出>      <字号> <基线>
+```
+
+改完字号/字体后可先用 `preview_ui.py` 在终端预览排版（ASCII art），确认无误再编译：
+
+```bash
+python tools/preview_ui.py
+```
+
+> 想支持中文需要另建大字号点阵（GB2312 常用字 6763 个 × 16B ≈ 108KB），
+> 且中文字形无法塞进 8×16 网格，一般要单独做 16×16 字库并按 UTF-8 解码查表。
 
 ## 编译与烧录
 
@@ -287,6 +344,9 @@ idf.py -p COMx flash monitor
 | 连上 `ESP32_DEMO` 但打不开网页、也不弹配网页 | 先「忘记网络」重连拿新 DHCP 租约（DNS=192.168.4.1）；手输 `http://192.168.4.1/`；别用 https 网址；安卓开了「私人 DNS」会绕过劫持，关掉或用 IP 直连 |
 | 门户页能开但点保存没反应 | 看串口是否有 `New credentials:` 日志；页面依赖 POST `/save`，用手机自带浏览器而非内置 WebView |
 | LCD 颜色不对/花屏/边框偏移 | 见「功能四」里的现象对照表：调 `LCD_RGB_ORDER`、`LCD_INVERT_COLOR`、`LCD_OFFSET_*`、`LCD_PIXEL_CLOCK_HZ` |
+| LCD 第一行一直显示 `NTP syncing...` | 设备没联网（看 LED 是否常亮）；SNTP 需要能访问外网 UDP 123 |
+| LCD 第二行显示 `?????` | SSID 含中文/非 ASCII 字符，当前字库只覆盖 ASCII |
+| LCD 想回到刷屏测试 | `feature_config.h` 里 `APP_LCD_COLOR_TEST` 改回 1 |
 | 反复重启 | 检查是否误开了 PSRAM 配置（`sdkconfig.defaults` 中相关项默认注释） |
 | 移植到其他板后 LED 现象相反 | 该板 LED 为高电平驱动，把 `led_status.c` 的 `LED_ACTIVE_LEVEL` 改为 1（本板为低电平点亮） |
 

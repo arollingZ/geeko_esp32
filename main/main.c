@@ -35,6 +35,9 @@
 
 #if APP_ENABLE_LCD
 #include "lcd_st7789.h"
+#if !APP_LCD_COLOR_TEST
+#include "lcd_ui.h"
+#endif
 #endif
 
 static const char *TAG = "APP";
@@ -63,9 +66,16 @@ void app_main(void)
 #endif
 
 #if APP_ENABLE_LCD
-    /* 功能 4：LCD 初始化 + 内部刷屏任务（每 3s 换色，非阻塞） */
+    /* 功能 4：LCD 初始化（内部按 APP_LCD_COLOR_TEST 决定是否跑刷屏测试） */
     ESP_ERROR_CHECK(lcd_init());
-    ESP_LOGI(TAG, " feature 4: LCD started (color sweep every 3 s)");
+#if APP_LCD_COLOR_TEST
+    ESP_LOGI(TAG, " feature 4: LCD color sweep test running");
+#else
+    /* 正常显示：东八区时间 + 当前连接热点名，20fps */
+    ESP_ERROR_CHECK(lcd_ui_init());
+    ESP_LOGI(TAG, " feature 4: LCD UI running (time + ssid, %d fps)",
+             1000 / LCD_UI_REFRESH_MS);
+#endif
 #endif
 
 #if APP_ENABLE_TF_CARD

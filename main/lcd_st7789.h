@@ -53,6 +53,18 @@ esp_err_t lcd_init(void);
 /** 背光开关 */
 void lcd_backlight(bool on);
 
+/**
+ * @brief 把一块 RGB565 像素缓冲送到屏幕指定区域
+ *
+ * 供 UI 层使用：先在内存里组好一帧（或一块脏区域），再一次性刷到屏上。
+ * 本函数内部会等待 DMA 传输完成才返回，因此返回后即可安全改写 buf。
+ *
+ * @param x,y   左上角坐标（逻辑坐标，已含偏移处理）
+ * @param w,h   区域尺寸，超界自动裁剪
+ * @param buf   RGB565 像素，行优先，必须是 DMA 可访问内存
+ */
+esp_err_t lcd_flush(int x, int y, int w, int h, const uint16_t *buf);
+
 /** 整屏填充单一颜色 */
 esp_err_t lcd_fill_color(uint16_t color);
 
