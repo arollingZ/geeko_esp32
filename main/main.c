@@ -33,6 +33,10 @@
 #include "led_status.h"
 #endif
 
+#if APP_ENABLE_LCD
+#include "lcd_st7789.h"
+#endif
+
 static const char *TAG = "APP";
 
 #define MAIN_LOOP_PERIOD_MS     1000  /* 主循环周期 */
@@ -43,8 +47,8 @@ void app_main(void)
     ESP_LOGI(TAG, "==================================================");
     ESP_LOGI(TAG, " ESP32-S3M-N16R8 demo project");
     ESP_LOGI(TAG, " ESP-IDF %s", esp_get_idf_version());
-    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d",
-             APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED);
+    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d",
+             APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED, APP_ENABLE_LCD);
     ESP_LOGI(TAG, "==================================================");
 
 #if APP_ENABLE_WIFI
@@ -56,6 +60,15 @@ void app_main(void)
 #if APP_ENABLE_LED
     /* 功能 3：LED 状态指示（内部起独立任务，按 wifi_mgr 状态闪烁） */
     ESP_ERROR_CHECK(led_status_init());
+#endif
+
+#if APP_ENABLE_LCD
+    /* 功能 4：LCD 初始化 + 纯色刷屏自检（约 2s，只在启动时跑一次） */
+    ESP_ERROR_CHECK(lcd_init());
+    ESP_LOGI(TAG, " feature 4: LCD init done, running color test");
+    ESP_ERROR_CHECK(lcd_color_test());
+    /* 自检结束留黑屏，后续在这里刷新状态界面 */
+    ESP_ERROR_CHECK(lcd_fill_color(LCD_COLOR_BLACK));
 #endif
 
 #if APP_ENABLE_TF_CARD

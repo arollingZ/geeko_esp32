@@ -3,10 +3,12 @@ idf_component_register(
          "tf_card.c"
          "wifi_mgr.c"
          "led_status.c"
+         "lcd_st7789.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_spi
              esp_driver_sdspi
              esp_driver_gpio
+             esp_lcd
              sdmmc
              fatfs
              vfs

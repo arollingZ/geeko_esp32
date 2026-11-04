@@ -29,3 +29,9 @@
  * 依赖功能 2 的 wifi_mgr_get_state()；APP_ENABLE_WIFI=0 时 LED 仅保持熄灭。
  */
 #define APP_ENABLE_LED       1
+
+/* ---------------- 功能 4：LCD 显示（ST7789，0.96 寸 80x160） ----------------
+ * 引脚：CS=IO39 / DC=IO40 / RST=IO38 / BL=IO41，数据线 SCLK=IO12 / MOSI=IO11
+ * 注意：数据线与 TF 卡共用同一条 SPI2 总线，靠各自 CS 分时复用。
+ */
+#define APP_ENABLE_LCD       1

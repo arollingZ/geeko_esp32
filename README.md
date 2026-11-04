@@ -9,7 +9,7 @@
 | 1 | TF 卡数据读写 + 读写准确性验证 | ⏸ 暂时屏蔽（`APP_ENABLE_TF_CARD=0`，待 TF 卡到位后改回 1） |
 | 2 | WiFi 配网（Web 配网，凭据存 TF 卡/NVS） | ✅ 已完成 |
 | 3 | LED 指示灯（IO1，指示网络状态） | ✅ 已完成 |
-| 4 | LCD 显示（ST7735S 80x160） | ⬜ 待实现 |
+| 4 | LCD 显示（ST7789 80x160） | 🚧 初始化 + 纯色刷屏自检已完成，文字/状态界面待做 |
 
 功能开关集中在 `main/feature_config.h`，宏为 0 时对应功能被条件编译屏蔽，
 对外接口保留桩实现，调用方无需修改。
@@ -26,7 +26,8 @@ geeko_esp32/
     ├── main.c              # app_main：1s 主循环非阻塞调度各功能
     ├── tf_card.c/.h        # TF 卡驱动：SPI 挂载、读写校验（当前屏蔽，桩实现）
     ├── wifi_mgr.c/.h       # WiFi 管理：SoftAP Web 配网、断线重连、外网验证
-    └── led_status.c/.h     # LED 状态指示：按网络状态闪烁（IO1）
+    ├── led_status.c/.h     # LED 状态指示：按网络状态闪烁（IO1）
+    └── lcd_st7789.c/.h     # LCD：ST7789 初始化、整屏/矩形填色、纯色自检
 ```
 
 ## 功能一：TF 卡读写与准确性验证
@@ -166,6 +167,63 @@ I (492) APP: TF card is ready for use at /sdcard
 - `APP_ENABLE_LED=0` 时整体条件编译屏蔽（接口返回 `ESP_ERR_NOT_SUPPORTED`）；
   `APP_ENABLE_WIFI=0` 时 LED 仅初始化并保持熄灭（没有网络状态可指示）。
 
+## 功能四：LCD 显示（ST7789 80x160）
+
+实现于 `lcd_st7789.c`，驱动直接用 **IDF v6.1 内置的 `esp_lcd_panel_st7789`**
+（`esp_lcd` 组件），不手写初始化序列。
+
+### 接线
+
+| 屏 | ESP32-S3 | 说明 |
+| -- | -------- | ---- |
+| CS | IO39 | 片选 |
+| DC | IO40 | 数据/命令选择 |
+| RST | IO38 | 复位 |
+| BL | IO41 | 背光，高电平点亮 |
+| SCLK | IO12 | 时钟 |
+| MOSI | IO11 | 数据（单向，屏不回读） |
+
+> **与 TF 卡共用总线**：IO11/12/13 是 TF 卡和 LCD 同一条 SPI2 总线（板载就是这样设计的），
+> 两者靠各自的 CS 分时复用。`lcd_init()` 遇到 `ESP_ERR_INVALID_STATE` 会当作「总线已被
+> 初始化过」直接复用，所以两个功能谁先初始化都行。
+
+### 面板参数（`lcd_st7789.c` 顶部宏）
+
+| 宏 | 默认 | 说明 |
+| -- | ---- | ---- |
+| `LCD_RGB_ORDER` | `BGR` | 红蓝颠倒时改成 `LCD_RGB_ELEMENT_ORDER_RGB` |
+| `LCD_INVERT_COLOR` | `true` | 黑变白/白变黑时取反 |
+| `LCD_SWAP_XY` | `true` | 横屏（160 宽 × 80 高） |
+| `LCD_MIRROR_X/Y` | `false` / `true` | 上下或左右镜像 |
+| `LCD_OFFSET_X/Y` | `1` / `26` | 可见区域在控制器 RAM 中的偏移 |
+| `LCD_PIXEL_CLOCK_HZ` | 40 MHz | 线长或干扰大可降到 20 MHz |
+
+颜色用 `LCD_RGB565(r, g, b)` 宏构造（RGB565，传 MCU 原生 `uint16_t`，
+所以 `data_endian` 设为 `LCD_RGB_DATA_ENDIAN_LITTLE`）。
+
+### 纯色刷屏自检
+
+开机执行一次 `lcd_color_test()`：依次整屏刷 **白 → 红 → 绿 → 蓝 → 黑**（各 400ms），
+最后留一个 **黑底 2px 白色边框**。这是排查硬件最快的手段：
+
+| 现象 | 原因 | 处理 |
+| ---- | ---- | ---- |
+| 完全不亮 | 背光/接线/CS | 查 BL=IO41 电平、SPI 引脚、共地 |
+| 「红」显示成蓝色 | R/B 通道颠倒 | `LCD_RGB_ORDER` 改成 RGB |
+| 黑变白、白变黑 | 反色配置反了 | `LCD_INVERT_COLOR` 取反 |
+| 边框缺一边 / 偏出屏幕 | 偏移或方向不对 | 调 `LCD_OFFSET_X/Y`、`LCD_MIRROR_*` |
+| 花屏、雪花 | 时钟太快 / 传输未同步 | 降 `LCD_PIXEL_CLOCK_HZ`；代码已用传输完成回调等待 |
+
+### 对外接口（`lcd_st7789.h`）
+
+| 接口 | 说明 |
+| ---- | ---- |
+| `lcd_init()` | 初始化总线 + panel IO + ST7789 + 背光 |
+| `lcd_backlight(bool)` | 背光开关 |
+| `lcd_fill_color(color)` | 整屏填色 |
+| `lcd_fill_rect(x,y,w,h,color)` | 填矩形（自动裁剪，内部分块传输） |
+| `lcd_color_test()` | 纯色刷屏 + 边框自检 |
+
 ## 编译与烧录
 
 ```bash
@@ -196,6 +254,7 @@ idf.py -p COMx flash monitor
 | 读写校验偶发失败 | 降低 `TFCARD_MAX_FREQ_KHZ` 到 10000 或 4000，缩短杜邦线，加去耦电容 |
 | 连上 `ESP32_DEMO` 但打不开网页、也不弹配网页 | 先「忘记网络」重连拿新 DHCP 租约（DNS=192.168.4.1）；手输 `http://192.168.4.1/`；别用 https 网址；安卓开了「私人 DNS」会绕过劫持，关掉或用 IP 直连 |
 | 门户页能开但点保存没反应 | 看串口是否有 `New credentials:` 日志；页面依赖 POST `/save`，用手机自带浏览器而非内置 WebView |
+| LCD 颜色不对/花屏/边框偏移 | 见「功能四」里的现象对照表：调 `LCD_RGB_ORDER`、`LCD_INVERT_COLOR`、`LCD_OFFSET_*`、`LCD_PIXEL_CLOCK_HZ` |
 | 反复重启 | 检查是否误开了 PSRAM 配置（`sdkconfig.defaults` 中相关项默认注释） |
 | 移植到其他板后 LED 现象相反 | 该板 LED 为高电平驱动，把 `led_status.c` 的 `LED_ACTIVE_LEVEL` 改为 1（本板为低电平点亮） |
 
