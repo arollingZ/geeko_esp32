@@ -23,3 +23,11 @@
 	DC PIN:IO40
 	RST PIN:IO38
 	LCD驱动芯片型号：ST7735S, 0.96 inch 80RGB*160DOTS
+5. 麦克风拾音及播放功能
+	音频 		codec	ES8388（24bit，ADC + DAC 二合一，I2C 控制）
+	I2S 引脚	BCLK=GPIO7，WS=GPIO16，DIN=GPIO17，DOUT=GPIO15，MCLK=GPIO6
+	I2C 引脚	SDA=GPIO4，SCL=GPIO5
+	采样率		输入 24 kHz / 输出 24 kHz
+	功放使能	GPIO42（高电平开启），插耳机检测脚 GPIO3
+	显示		160×80 SPI 屏（ST7789），背光 GPIO41
+	按键		BOOT=GPIO0（按下说话、松开停止），音量加 GPIO48 / 减 GPIO47

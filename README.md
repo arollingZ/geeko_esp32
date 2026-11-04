@@ -30,14 +30,16 @@ geeko_esp32/
     ├── led_status.c/.h     # LED 状态指示：按网络状态闪烁（IO1）
     ├── lcd_st7789.c/.h     # LCD 底层：ST7789 初始化、填色、flush
     ├── lcd_ui.c/.h         # LCD 界面：东八区时间 + 热点名，20fps
-    └── font8x16.c/.h       # 8x16 ASCII 点阵字库（由 tools 生成）
+    └── font8x16.c/.h       # 8x16 ASCII 点阵字库（Pillow/FreeType 生成）
 ```
 
 `tools/` 下是开发期用的 PC 端脚本，不参与固件构建：
 
 | 脚本 | 用途 |
 | ---- | ---- |
-| `ttf2font.py` | 把 TTF 栅格化成 `main/font8x16.c`（纯标准库，无需 PIL） |
+| `ttf2font_pillow.py` | **推荐**：用 Pillow/FreeType（带 hinting）生成 `main/font8x16.c` |
+| `ttf2font.py` | 无依赖回退版：纯标准库几何栅格化，效果略差 |
+| `compare_fonts.py` | 并排对比两版字库并统计像素差异，纯文本输出 |
 | `preview_ui.py` | 解析生成的 C 字库，用 ASCII art 预览两行文字的实际排版 |
 
 ## 功能一：TF 卡读写与准确性验证
@@ -248,8 +250,9 @@ I (492) APP: TF card is ready for use at /sdcard
 首次同步必然失败，所以未对时期间任务每 1.5s 重新发起一次同步（最多重试 10 分钟），
 对时成功前第一行显示 `NTP syncing...`，成功后不再变化。
 
-**字体是 8×16 ASCII 点阵**（95 个字符，1520 字节），由 `tools/ttf2font.py` 从
-Arial 栅格化生成，每行 20 个字符（160 / 8）。注意 **不支持中文**：含中文的 SSID
+**字体是 8×16 ASCII 点阵**（95 个字符，1520 字节），每行 20 个字符（160 / 8）。
+当前字库由 `tools/ttf2font_pillow.py` 从 **Noto Sans SC 14px**（字重 Regular）生成，
+走 Pillow/FreeType 的**单色 + hinting** 路径。注意 **不支持中文**：含中文的 SSID
 会显示成 `?`（字库只覆盖 ASCII 32..126）。需要中文可以扩展字库，见文末说明。
 
 ### 抗撕裂（tearing）
@@ -297,21 +300,51 @@ Arial 栅格化生成，每行 20 个字符（160 / 8）。注意 **不支持中
 
 ### 重新生成字库 / 换成其他字体
 
-`tools/ttf2font.py` 只用 Python 标准库解析 TTF，不依赖 PIL：
+**推荐用 Pillow 版**（FreeType + hinting，笔画会被吸附到像素网格，小字号下明显更整齐）：
+
+```bash
+pip install pillow
+python tools/ttf2font_pillow.py C:/Windows/Fonts/NotoSansSC-VF.ttf main/font8x16.c 14 --weight Regular
+#                              <字体文件>                           <输出>      <字号> <字重>
+```
+
+常用选项：
+
+| 选项 | 说明 |
+| ---- | ---- |
+| `--weight Regular/Medium/DemiLight` | 可变字体字重。Noto VF 默认是 **Thin(100)**，不指定会导致笔画残缺 |
+| `--art` | 终端打印若干字符的 ASCII 预览 |
+| `--png <路径>` | 把整张字库导出 PNG，便于比对 |
+| `--no-hint` | 改用灰度抗锯齿路径，用于对照 |
+
+没有 Pillow 时可用纯标准库回退版（几何栅格化，效果略差但零依赖）：
 
 ```bash
 python tools/ttf2font.py C:/Windows/Fonts/arial.ttf main/font8x16.c 14 12
-#                        <字体文件>                    <输出>      <字号> <基线>
+#                         <字体文件>                    <输出>      <字号> <基线>
 ```
 
-改完字号/字体后可先用 `preview_ui.py` 在终端预览排版（ASCII art），确认无误再编译：
+改完先预览排版，确认无误再编译：
 
 ```bash
 python tools/preview_ui.py
+python tools/compare_fonts.py main/font8x16.c 其他字库.c 0123456789   # 逐字符对比
 ```
+
+#### 字体选型实测结论
+
+在同一 8×16 网格、14px、单色 hinting 下实测（文件见 `build/font_cmp/`）：
+
+| 方案 | 数字表现 | 说明 |
+| ---- | ---- | ---- |
+| **Noto Sans SC 14 Regular**（当前） | 笔画均匀、无错误笔画 | OFL 许可，可安全用于开源；自带中文，将来可扩展 |
+| Tahoma 14 | `0` 更饱满、`1` 有旗子和底座 | 视觉最佳，但 Tahoma 是微软商业字体，不宜随开源项目分发其点阵 |
+| 几何栅格化（`ttf2font.py`） | 笔画粗细不均 | `a` 多出孤立点、`g` 出现 2px 毛刺、`y` 笔画歪斜 |
+| size ≥ 16 | 明显变糊 | 字符达到 7px 宽后相邻字符开始粘连 |
 
 > 想支持中文需要另建大字号点阵（GB2312 常用字 6763 个 × 16B ≈ 108KB），
 > 且中文字形无法塞进 8×16 网格，一般要单独做 16×16 字库并按 UTF-8 解码查表。
+> Noto Sans SC 已包含完整中文字形，是将来做中文点阵的现成来源。
 
 ## 编译与烧录
 
