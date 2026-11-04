@@ -2,6 +2,7 @@ idf_component_register(
     SRCS "main.c"
          "tf_card.c"
          "wifi_mgr.c"
+         "led_status.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_spi
              esp_driver_sdspi

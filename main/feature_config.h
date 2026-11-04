@@ -19,3 +19,13 @@
  * 凭据优先存 TF 卡（APP_ENABLE_TF_CARD=0 时存 NVS），断线自动重连。
  */
 #define APP_ENABLE_WIFI      1
+
+/* ---------------- 功能 3：LED 状态指示（IO1） ----------------
+ * 按 readme.txt 要求指示网络状态：
+ *   NO_CRED      -> 熄灭
+ *   CONNECTING   -> 快闪 2 下（亮100ms/灭100ms/亮100ms）后灭 1s，循环
+ *   CONNECTED    -> 慢闪（亮500ms/灭500ms）
+ *   INTERNET_OK  -> 常亮
+ * 依赖功能 2 的 wifi_mgr_get_state()；APP_ENABLE_WIFI=0 时 LED 仅保持熄灭。
+ */
+#define APP_ENABLE_LED       1

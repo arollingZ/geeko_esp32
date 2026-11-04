@@ -8,7 +8,7 @@
 | ---- | ---- | ---- |
 | 1 | TF 卡数据读写 + 读写准确性验证 | ⏸ 暂时屏蔽（`APP_ENABLE_TF_CARD=0`，待 TF 卡到位后改回 1） |
 | 2 | WiFi 配网（Web 配网，凭据存 TF 卡/NVS） | ✅ 已完成 |
-| 3 | LED 指示灯（IO1，指示网络状态） | ⬜ 待实现 |
+| 3 | LED 指示灯（IO1，指示网络状态） | ✅ 已完成 |
 | 4 | LCD 显示（ST7735S 80x160） | ⬜ 待实现 |
 
 功能开关集中在 `main/feature_config.h`，宏为 0 时对应功能被条件编译屏蔽，
@@ -22,10 +22,11 @@ geeko_esp32/
 ├── sdkconfig.defaults      # 默认配置：esp32s3 / 16MB Flash / FatFS 长文件名
 └── main/
     ├── CMakeLists.txt
-    ├── feature_config.h    # 功能开关宏（TF 卡 / WiFi / 后续 LED、LCD）
+    ├── feature_config.h    # 功能开关宏（TF 卡 / WiFi / LED / 后续 LCD）
     ├── main.c              # app_main：1s 主循环非阻塞调度各功能
     ├── tf_card.c/.h        # TF 卡驱动：SPI 挂载、读写校验（当前屏蔽，桩实现）
-    └── wifi_mgr.c/.h       # WiFi 管理：SoftAP Web 配网、断线重连、外网验证
+    ├── wifi_mgr.c/.h       # WiFi 管理：SoftAP Web 配网、断线重连、外网验证
+    └── led_status.c/.h     # LED 状态指示：按网络状态闪烁（IO1）
 ```
 
 ## 功能一：TF 卡读写与准确性验证
@@ -148,6 +149,23 @@ I (492) APP: TF card is ready for use at /sdcard
 - HTTP 请求体长度直接读 `req->content_len` 字段（旧 `httpd_req_get_content_len()` 已移除）
 - 通配 URI 需 `cfg.uri_match_fn = httpd_uri_match_wildcard`，`uri="*"` 可匹配任意路径
 
+## 功能三：LED 状态指示（IO1）
+
+实现于 `led_status.c`，独立低优先级任务按 `wifi_mgr_get_state()` 的状态查表播放闪烁序列，
+状态切换时序列从头开始并在串口打印 `LED: state=...`，方便对照验收现象。
+
+| WiFi 状态 | 含义 | LED 行为（readme.txt 要求） |
+| ---- | ---- | ---- |
+| `NO_CRED` | 未配网 | 熄灭 |
+| `CONNECTING` | 已保存凭据但未连上热点 | 快闪 2 下（亮 100ms → 灭 100ms → 亮 100ms）后熄灭 1s，循环 |
+| `CONNECTED` | 已连上热点，外网不通 | 慢闪：亮 500ms / 灭 500ms |
+| `INTERNET_OK` | 外网连通 | 常亮 |
+
+- 引脚 `LED_GPIO_NUM=1`，亮灭电平 `LED_ACTIVE_LEVEL`（默认高电平点亮，
+  硬件若为低电平驱动改为 0）。
+- `APP_ENABLE_LED=0` 时整体条件编译屏蔽（接口返回 `ESP_ERR_NOT_SUPPORTED`）；
+  `APP_ENABLE_WIFI=0` 时 LED 仅初始化并保持熄灭（没有网络状态可指示）。
+
 ## 编译与烧录
 
 ```bash
@@ -179,6 +197,7 @@ idf.py -p COMx flash monitor
 | 连上 `ESP32_DEMO` 但打不开网页、也不弹配网页 | 先「忘记网络」重连拿新 DHCP 租约（DNS=192.168.4.1）；手输 `http://192.168.4.1/`；别用 https 网址；安卓开了「私人 DNS」会绕过劫持，关掉或用 IP 直连 |
 | 门户页能开但点保存没反应 | 看串口是否有 `New credentials:` 日志；页面依赖 POST `/save`，用手机自带浏览器而非内置 WebView |
 | 反复重启 | 检查是否误开了 PSRAM 配置（`sdkconfig.defaults` 中相关项默认注释） |
+| LED 现象与预期相反（该灭常亮） | 硬件为低电平驱动，把 `led_status.c` 的 `LED_ACTIVE_LEVEL` 改为 0 |
 
 ## 许可证
 

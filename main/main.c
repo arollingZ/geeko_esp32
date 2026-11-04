@@ -4,7 +4,7 @@
  * 功能清单（各功能由 main/feature_config.h 的宏开关控制）：
  *   1. TF 卡数据读写 + 读写准确性验证（SPI 模式）   —— 当前屏蔽：暂无 TF 卡
  *   2. WiFi 配网（SoftAP ESP32_DEMO + Web 配网 + 断线重连）—— 已实现
- *   3. LED 指示灯（IO1，指示网络状态）              —— 待实现
+ *   3. LED 状态指示（IO1，指示网络状态）            —— 已实现
  *   4. LCD 显示（ST7735S，80x160）                  —— 待实现
  *
  * 主循环以 1s 为周期调度各功能（非阻塞轮询），方便后续功能并行扩展。
@@ -29,6 +29,10 @@
 #include "wifi_mgr.h"
 #endif
 
+#if APP_ENABLE_LED
+#include "led_status.h"
+#endif
+
 static const char *TAG = "APP";
 
 #define MAIN_LOOP_PERIOD_MS     1000  /* 主循环周期 */
@@ -39,13 +43,19 @@ void app_main(void)
     ESP_LOGI(TAG, "==================================================");
     ESP_LOGI(TAG, " ESP32-S3M-N16R8 demo project");
     ESP_LOGI(TAG, " ESP-IDF %s", esp_get_idf_version());
-    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d", APP_ENABLE_TF_CARD, APP_ENABLE_WIFI);
+    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d",
+             APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED);
     ESP_LOGI(TAG, "==================================================");
 
 #if APP_ENABLE_WIFI
     /* 功能 2：WiFi 管理（SoftAP 常开 + Web 配网 + 断线重连），非阻塞启动 */
     ESP_ERROR_CHECK(wifi_mgr_init());
     ESP_LOGI(TAG, " feature 2: WiFi provisioning started (AP: " WIFI_MGR_AP_SSID ")");
+#endif
+
+#if APP_ENABLE_LED
+    /* 功能 3：LED 状态指示（内部起独立任务，按 wifi_mgr 状态闪烁） */
+    ESP_ERROR_CHECK(led_status_init());
 #endif
 
 #if APP_ENABLE_TF_CARD
