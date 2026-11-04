@@ -1,8 +1,8 @@
-# demo_project — ESP32-S3M-N16R8 功能演示
+# geeko_esp32 — ESP32-S3M-N16R8 功能演示
 
 基于 **ESP32-S3M-N16R8**（16MB Flash / 8MB PSRAM）与 **ESP-IDF v6.1.0** 的功能演示工程。
 
-功能清单与验收要求见 `../demo_project/readme.txt`，当前进度：
+功能清单与验收要求见 [`readme.txt`](readme.txt)，当前进度：
 
 | 序号 | 功能 | 状态 |
 | ---- | ---- | ---- |
@@ -17,7 +17,7 @@
 ## 目录结构
 
 ```
-demo_project/
+geeko_esp32/
 ├── CMakeLists.txt          # 工程入口
 ├── sdkconfig.defaults      # 默认配置：esp32s3 / 16MB Flash / FatFS 长文件名
 └── main/
@@ -151,23 +151,22 @@ I (492) APP: TF card is ready for use at /sdcard
 ## 编译与烧录
 
 ```bash
-# 1) 首次使用本仓库前，必须初始化 IDF 子模块（否则 bootloader/mbedtls 等无法编译）
-cd /d/ESP-IDF/esp-idf-v6.1
+# 0) 安装 ESP-IDF v6.1（任意路径），并初始化子模块（否则 bootloader/mbedtls 等无法编译）
+cd <你的 esp-idf 目录>
 git submodule update --init --recursive
 
-# 2) 激活 IDF 环境（Windows PowerShell）
-D:\ESP-IDF\esp-idf-v6.1\export.ps1
+# 1) 激活 IDF 环境
+#    Windows PowerShell:  .\export.ps1
+#    Linux/macOS:         . ./export.sh
 
-# 3) 编译
-cd D:\ESP-IDF\my_projects\demo_project
+# 2) 编译
+cd geeko_esp32
 idf.py set-target esp32s3     # 仅首次；sdkconfig.defaults 已指定 esp32s3
 idf.py build
 
-# 4) 烧录并查看日志
+# 3) 烧录并查看日志
 idf.py -p COMx flash monitor
 ```
-
-> 工程位于 IDF 仓库目录内，构建时会自动被 IDF 的组件扫描跳过（`my_projects` 下无 `components` 目录冲突），无需额外设置 `EXTRA_COMPONENT_DIRS`。
 
 ## 常见问题
 
