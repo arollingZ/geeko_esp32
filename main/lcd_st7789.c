@@ -55,6 +55,11 @@ static const char *TAG = "LCD";
 /* 填充时分块的行数：160 * 20 * 2 = 6400 字节，兼顾内存与效率 */
 #define LCD_CHUNK_ROWS      20
 
+/* 周期性刷屏任务参数 */
+#define LCD_TASK_STACK      3072
+#define LCD_TASK_PRIO       3
+#define LCD_SWEEP_PERIOD_MS 3000   /* 每 3 秒换一次颜色 */
+
 static esp_lcd_panel_io_handle_t s_io = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static bool s_inited = false;
@@ -181,6 +186,44 @@ esp_err_t lcd_color_test(void)
     return ESP_OK;
 }
 
+/* 周期性刷屏任务：每 LCD_SWEEP_PERIOD_MS 换一种颜色整屏填充，循环往复。
+ * 目的：验证 LCD 通路稳定（长时间连续刷屏不花屏、不丢帧），后续接入
+ * 状态界面后可把这个任务换成真正的 UI 刷新。 */
+typedef struct {
+    uint16_t color;
+    const char *name;
+} lcd_sweep_color_t;
+
+static const lcd_sweep_color_t s_sweep_seq[] = {
+    { LCD_COLOR_RED,     "red" },
+    { LCD_COLOR_GREEN,   "green" },
+    { LCD_COLOR_BLUE,    "blue" },
+    { LCD_COLOR_WHITE,   "white" },
+    { LCD_COLOR_BLACK,   "black" },
+    { LCD_COLOR_YELLOW,  "yellow" },
+    { LCD_COLOR_CYAN,    "cyan" },
+    { LCD_COLOR_MAGENTA, "magenta" },
+};
+#define LCD_SWEEP_COLOR_COUNT  (sizeof(s_sweep_seq) / sizeof(s_sweep_seq[0]))
+
+static void lcd_sweep_task(void *arg)
+{
+    (void)arg;
+    size_t idx = 0;
+    uint32_t round = 0;
+
+    while (true) {
+        esp_err_t err = lcd_fill_color(s_sweep_seq[idx].color);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "fill %s failed: %s", s_sweep_seq[idx].name, esp_err_to_name(err));
+        } else {
+            ESP_LOGI(TAG, "sweep #%u: %s", (unsigned)++round, s_sweep_seq[idx].name);
+        }
+        idx = (idx + 1) % LCD_SWEEP_COLOR_COUNT;
+        vTaskDelay(pdMS_TO_TICKS(LCD_SWEEP_PERIOD_MS));
+    }
+}
+
 esp_err_t lcd_init(void)
 {
     if (s_inited) {
@@ -257,6 +300,16 @@ esp_err_t lcd_init(void)
     ESP_LOGI(TAG, "ST7789 ready: %dx%d, SPI2 CS=%d DC=%d RST=%d BL=%d, %d MHz",
              LCD_H_RES, LCD_V_RES, LCD_PIN_CS, LCD_PIN_DC, LCD_PIN_RST, LCD_PIN_BL,
              LCD_PIXEL_CLOCK_HZ / 1000000);
+
+    /* 起刷屏任务（与 wifi_mgr 一样：init 内部起任务，调用方不被阻塞） */
+    if (xTaskCreate(lcd_sweep_task, "lcd_sweep", LCD_TASK_STACK, NULL,
+                    LCD_TASK_PRIO, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "LCD sweep task create failed");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "color sweep started: %u colors, every %d ms",
+             (unsigned)LCD_SWEEP_COLOR_COUNT, LCD_SWEEP_PERIOD_MS);
+
     return ESP_OK;
 }
 

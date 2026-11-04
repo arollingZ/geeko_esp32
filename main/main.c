@@ -63,12 +63,9 @@ void app_main(void)
 #endif
 
 #if APP_ENABLE_LCD
-    /* 功能 4：LCD 初始化 + 纯色刷屏自检（约 2s，只在启动时跑一次） */
+    /* 功能 4：LCD 初始化 + 内部刷屏任务（每 3s 换色，非阻塞） */
     ESP_ERROR_CHECK(lcd_init());
-    ESP_LOGI(TAG, " feature 4: LCD init done, running color test");
-    ESP_ERROR_CHECK(lcd_color_test());
-    /* 自检结束留黑屏，后续在这里刷新状态界面 */
-    ESP_ERROR_CHECK(lcd_fill_color(LCD_COLOR_BLACK));
+    ESP_LOGI(TAG, " feature 4: LCD started (color sweep every 3 s)");
 #endif
 
 #if APP_ENABLE_TF_CARD

@@ -9,7 +9,7 @@
 | 1 | TF 卡数据读写 + 读写准确性验证 | ⏸ 暂时屏蔽（`APP_ENABLE_TF_CARD=0`，待 TF 卡到位后改回 1） |
 | 2 | WiFi 配网（Web 配网，凭据存 TF 卡/NVS） | ✅ 已完成 |
 | 3 | LED 指示灯（IO1，指示网络状态） | ✅ 已完成 |
-| 4 | LCD 显示（ST7789 80x160） | 🚧 初始化 + 纯色刷屏自检已完成，文字/状态界面待做 |
+| 4 | LCD 显示（ST7789 80x160） | 🚧 初始化 + 周期刷屏任务已完成，文字/状态界面待做 |
 
 功能开关集中在 `main/feature_config.h`，宏为 0 时对应功能被条件编译屏蔽，
 对外接口保留桩实现，调用方无需修改。
@@ -201,10 +201,25 @@ I (492) APP: TF card is ready for use at /sdcard
 颜色用 `LCD_RGB565(r, g, b)` 宏构造（RGB565，传 MCU 原生 `uint16_t`，
 所以 `data_endian` 设为 `LCD_RGB_DATA_ENDIAN_LITTLE`）。
 
-### 纯色刷屏自检
+### 周期刷屏任务
 
-开机执行一次 `lcd_color_test()`：依次整屏刷 **白 → 红 → 绿 → 蓝 → 黑**（各 400ms），
-最后留一个 **黑底 2px 白色边框**。这是排查硬件最快的手段：
+`lcd_init()` 与 `wifi_mgr_init()` 一样是**非阻塞**的：硬件初始化完成后内部创建
+`lcd_sweep` 任务，每 **3 秒**整屏换一种颜色，循环往复：
+
+```
+红 → 绿 → 蓝 → 白 → 黑 → 黄 → 青 → 品红 → 红 → ...
+```
+
+- 周期由 `LCD_SWEEP_PERIOD_MS` 控制（`lcd_st7789.c` 顶部）；
+- 串口每次刷屏打印 `LCD: sweep #N: <color>`，可据此确认任务在稳定运行；
+- 长时间连续刷屏不花屏、不丢帧，即说明 SPI 通路与时序稳定；
+- 后续接入状态界面时，把 `lcd_sweep_task` 的刷新逻辑换成 UI 绘制即可。
+
+### 一次性纯色自检（联调用）
+
+`lcd_color_test()` 与刷屏任务分开：需人工诊断时在 `app_main` 里临时调用一次，
+它依次整屏刷 **白 → 红 → 绿 → 蓝 → 黑**（各 400ms），最后留 **黑底 2px 白色边框**。
+正常启动流程不调用它。
 
 | 现象 | 原因 | 处理 |
 | ---- | ---- | ---- |
@@ -218,11 +233,11 @@ I (492) APP: TF card is ready for use at /sdcard
 
 | 接口 | 说明 |
 | ---- | ---- |
-| `lcd_init()` | 初始化总线 + panel IO + ST7789 + 背光 |
+| `lcd_init()` | 初始化总线 + panel IO + ST7789 + 背光，并启动 3s 刷屏任务（非阻塞） |
 | `lcd_backlight(bool)` | 背光开关 |
 | `lcd_fill_color(color)` | 整屏填色 |
 | `lcd_fill_rect(x,y,w,h,color)` | 填矩形（自动裁剪，内部分块传输） |
-| `lcd_color_test()` | 纯色刷屏 + 边框自检 |
+| `lcd_color_test()` | 一次性纯色 + 边框自检（人工诊断用，启动流程不调用） |
 
 ## 编译与烧录
 
