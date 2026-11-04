@@ -25,7 +25,7 @@ static const char *TAG = "LED";
 
 /* ---------------- 硬件配置 ---------------- */
 #define LED_GPIO_NUM        1        /* readme.txt：LED pin 脚 IO1 */
-#define LED_ACTIVE_LEVEL    1        /* 高电平点亮；若硬件为低电平驱动改为 0 */
+#define LED_ACTIVE_LEVEL    0        /* 低电平点亮（本板灌电流驱动，2026-11-04 实测确认）；若换高电平驱动板改为 1 */
 #define LED_TASK_STACK      2048
 #define LED_TASK_PRIO       3
 

@@ -161,8 +161,8 @@ I (492) APP: TF card is ready for use at /sdcard
 | `CONNECTED` | 已连上热点，外网不通 | 慢闪：亮 500ms / 灭 500ms |
 | `INTERNET_OK` | 外网连通 | 常亮 |
 
-- 引脚 `LED_GPIO_NUM=1`，亮灭电平 `LED_ACTIVE_LEVEL`（默认高电平点亮，
-  硬件若为低电平驱动改为 0）。
+- 引脚 `LED_GPIO_NUM=1`，亮灭电平 `LED_ACTIVE_LEVEL`（本板为灌电流驱动，**低电平点亮**，
+  已实测确认；换高电平驱动的板子改为 1）。
 - `APP_ENABLE_LED=0` 时整体条件编译屏蔽（接口返回 `ESP_ERR_NOT_SUPPORTED`）；
   `APP_ENABLE_WIFI=0` 时 LED 仅初始化并保持熄灭（没有网络状态可指示）。
 
@@ -197,7 +197,7 @@ idf.py -p COMx flash monitor
 | 连上 `ESP32_DEMO` 但打不开网页、也不弹配网页 | 先「忘记网络」重连拿新 DHCP 租约（DNS=192.168.4.1）；手输 `http://192.168.4.1/`；别用 https 网址；安卓开了「私人 DNS」会绕过劫持，关掉或用 IP 直连 |
 | 门户页能开但点保存没反应 | 看串口是否有 `New credentials:` 日志；页面依赖 POST `/save`，用手机自带浏览器而非内置 WebView |
 | 反复重启 | 检查是否误开了 PSRAM 配置（`sdkconfig.defaults` 中相关项默认注释） |
-| LED 现象与预期相反（该灭常亮） | 硬件为低电平驱动，把 `led_status.c` 的 `LED_ACTIVE_LEVEL` 改为 0 |
+| 移植到其他板后 LED 现象相反 | 该板 LED 为高电平驱动，把 `led_status.c` 的 `LED_ACTIVE_LEVEL` 改为 1（本板为低电平点亮） |
 
 ## 许可证
 
