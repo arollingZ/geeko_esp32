@@ -147,6 +147,27 @@ I (492) APP: TF card is ready for use at /sdcard
 > 注意：HTTPS 请求（`https://...`）无法劫持（TLS 握手过不去），所以别用 https 网址测试，
 > 用系统弹出的提示或手输 `http://192.168.4.1/`。
 
+### 已配网后换地方，怎么重新配网
+
+设备已经存了 A 地的热点，搬到 B 地后旧热点不存在，STA 会一直停在 `connecting` 状态反复重连。
+**ESP-IDF 在 STA 连接过程中不允许扫描**（`esp_wifi_scan_start()` 返回 `ESP_ERR_WIFI_STATE`），
+所以早期版本会出现「配网页里一个热点都没有、手动输入也提交不了」的情况。现在的处理：
+
+1. 配网页构建时先正常扫描；若因 STA 正在连接而失败，则**临时暂停自动重连 10s** 并主动
+   `esp_wifi_disconnect()`，等状态落下来后重试扫描（最多等 500ms）。
+2. 暂停到期由 `wifi_mgr_poll()` 自动恢复重连，不会因为用户只打开页面就永久断网；
+   若用户在页面上提交了新凭据，则立即清除暂停、直接连新热点。
+3. 表单现在**无论扫描成功与否都会输出**，扫描失败时手动输入热点名照样能提交；
+   页面上还有「重新扫描」链接（`/?scan=1`，跳过 5s 页面缓存立即重扫）。
+4. 串口会打印 `STA is connecting, scan not allowed -> pause reconnect and retry`，
+   紧接着 `scan found N AP(s)`，可作为该路径是否生效的判断依据。
+5. 状态机与真实链路解耦：只有 `IP_EVENT_STA_GOT_IP` 会把状态从 `CONNECTING` 推到
+   `CONNECTED`。为避免漏掉事件后永久快闪，`wifi_mgr_poll()` 会用 `sta_link_is_up()`
+   做自愈（`link recovered`）：必须同时满足「驱动已关联」**和**「STA 已拿到非零 IP」，
+   随后外网检测把它升到 `INTERNET_OK`。只看 `esp_wifi_sta_get_ap_info()` 不够 ——
+   实测它在 auth/assoc 阶段、或驱动保留上次 AP 缓存时也会返回 `ESP_OK`，会在启动
+   1.3s 就误报 link recovered。扫描/换热点时也只在「链路确实没起来」时才断开 STA。
+
 ### 首次配网操作步骤
 
 1. 烧录后串口日志出现 `DHCP serves DNS 192.168.4.1 ...` 与
@@ -376,6 +397,8 @@ idf.py -p COMx flash monitor
 | 读写校验偶发失败 | 降低 `TFCARD_MAX_FREQ_KHZ` 到 10000 或 4000，缩短杜邦线，加去耦电容 |
 | 连上 `ESP32_DEMO` 但打不开网页、也不弹配网页 | 先「忘记网络」重连拿新 DHCP 租约（DNS=192.168.4.1）；手输 `http://192.168.4.1/`；别用 https 网址；安卓开了「私人 DNS」会绕过劫持，关掉或用 IP 直连 |
 | 门户页能开但点保存没反应 | 看串口是否有 `New credentials:` 日志；页面依赖 POST `/save`，用手机自带浏览器而非内置 WebView |
+| 换了地方后配网页里没有热点列表 | 旧热点不在、STA 卡在 connecting 导致无法扫描；当前版本会自动暂停重连再扫（串口有 `pause reconnect and retry`），也可点页面上的「重新扫描」或手动输入热点名 |
+| 时间显示正常/能上网，LED 却一直快闪 | 状态机卡在 `CONNECTING` 而链路其实已通（常见于重配同一个热点时 `esp_wifi_connect()` 被驱动拒绝，或配网页反复刷新打断连接）。现由 `sta_link_is_up()`（已关联 + 有 IP）自愈到 `CONNECTED`，随后外网检测升到 `INTERNET_OK` 常亮，串口有 `link recovered` 日志；重配相同凭据时还会打印 `Credentials unchanged ... keep current link`，不会打断现有连接 |
 | LCD 颜色不对/花屏/边框偏移 | 见「功能四」里的现象对照表：调 `LCD_RGB_ORDER`、`LCD_INVERT_COLOR`、`LCD_OFFSET_*`、`LCD_PIXEL_CLOCK_HZ` |
 | LCD 第一行一直显示 `NTP syncing...` | 设备没联网（看 LED 是否常亮）；SNTP 需要能访问外网 UDP 123 |
 | LCD 第二行显示 `?????` | SSID 含中文/非 ASCII 字符，当前字库只覆盖 ASCII |

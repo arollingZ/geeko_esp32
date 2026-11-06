@@ -6,6 +6,8 @@
  *  - HTTP 服务监听 80 端口，任意 GET URI（含 generate_204 等探测路径）都
  *    返回配网页，手机连上后浏览器输入任意网址即可进入配网界面。
  *  - 配网页实时扫描附近热点（节流 5s），下拉选择 + 手动输入 + 密码提交。
+ *    扫描前若 STA 正在连接（换地方后旧热点不在），会临时暂停自动重连并断开，
+ *    否则 IDF 不允许扫描，列表永远是空的。
  *  - 凭据保存：TF 卡可用时写 /sdcard/wifi_cfg.txt（key=value 两行），
  *    同时双写 NVS 兜底；TF 卡屏蔽期间仅写 NVS。加载优先 TF 卡。
  *  - 断线自动重连（事件驱动），SoftAP 常开支持随时重新配网。
@@ -58,6 +60,9 @@ static const char *TAG_P = "PORTAL";
 #define NET_CHECK_PERIOD_MS   10000
 #define PORTAL_SCAN_MIN_MS    5000
 #define PORTAL_SCAN_MAX_APS   20
+/* 配网页扫描热点时暂停自动重连的时长：扫描期间 STA 必须空闲，否则 IDF 拒绝扫描。
+ * 到期由 wifi_mgr_poll() 恢复重连，避免用户只开页面不提交时设备一直不联网。 */
+#define PORTAL_SCAN_PAUSE_MS  10000
 #define HEARTBEAT_PERIOD_MS   30000
 #define PORTAL_DNS_PORT       53      /* DNS 劫持端口：所有域名解析到本机 */
 #define PORTAL_DNS_TASK_STACK 4096
@@ -70,8 +75,19 @@ static char s_pass[WIFI_STA_PASS_MAX] = { 0 };
 static httpd_handle_t s_httpd = NULL;
 static uint32_t s_retry_count = 0;
 
-/* SoftAP 网络接口与 IP（DNS 劫持、302 跳转都要用到） */
+/* ---------------- 扫描 / 重连互斥 ----------------
+ * STA 处于 connecting 时 esp_wifi_scan_start() 返回 ESP_ERR_WIFI_STATE。
+ * 设备换了地方后旧热点不存在，断线事件会立刻触发重连，STA 几乎一直停在
+ * connecting —— 配网页因此扫不到任何热点，用户也就无法重新配网。
+ * 扫描前用下面的标志临时"按住"自动重连并主动断开，扫描结束后由 poll 恢复。
+ * 访问来自 httpd 任务 / WiFi 事件任务 / 主循环任务，统一用临界区保护。 */
+static portMUX_TYPE s_reconnect_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_reconnect_paused = false;
+static int64_t s_reconnect_resume_us = 0;
+
+/* AP / STA 网络接口（DNS 劫持、302 跳转、链路状态判断都要用到） */
 static esp_netif_t *s_ap_netif = NULL;
+static esp_netif_t *s_sta_netif = NULL;
 static esp_ip4_addr_t s_ap_ip = { 0 };
 static TaskHandle_t s_dns_task = NULL;
 
@@ -311,23 +327,173 @@ static esp_err_t cred_save(const char *ssid, const char *pass)
 
 /* ==================== STA 连接控制 ==================== */
 
-static void sta_apply_config_and_connect(const char *ssid, const char *pass)
+/**
+ * @brief STA 链路是否真的可用（WiFi 驱动已关联 + DHCP 已拿到 IP）
+ *
+ * s_state 是我们自己的软件状态机，只有 IP_EVENT_STA_GOT_IP 才能把它从
+ * CONNECTING 推到 CONNECTED。一旦漏掉这个事件（例如重配网时
+ * esp_wifi_connect() 被驱动拒绝，或扫描期间断开又自动恢复），状态就会
+ * 永久卡在 CONNECTING：外网检测被状态门禁挡住、LED 一直快闪，尽管此时
+ * 网络其实是通的（SNTP 已校时）。这里用驱动侧真实状态兜底校正。
+ *
+ * 只查 esp_wifi_sta_get_ap_info() 不够：实测在 auth/assoc 阶段、或驱动还
+ * 保留着上次 AP 缓存时，它也会返回 ESP_OK（启动 1.3s 就误报 link recovered，
+ * 而真正拿到 IP 是 6s）。因此必须再确认 STA netif 已有非零 IP。
+ */
+static bool sta_link_is_up(void)
 {
+    wifi_ap_record_t ap = { 0 };
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        return false;
+    }
+    if (s_sta_netif == NULL) {
+        return false;
+    }
+    esp_netif_ip_info_t ip = { 0 };
+    if (esp_netif_get_ip_info(s_sta_netif, &ip) != ESP_OK) {
+        return false;
+    }
+    return ip.ip.addr != 0;
+}
+
+/* 把当前 s_ssid / s_pass 下发到 STA 配置（重连前调用，保证用最新凭据） */
+static void sta_apply_config(void)
+{
+    if (s_ssid[0] == '\0') {
+        return;
+    }
     wifi_config_t sta = { 0 };
-    strlcpy((char *)sta.sta.ssid, ssid, sizeof(sta.sta.ssid));
-    if (pass != NULL && pass[0] != '\0') {
-        strlcpy((char *)sta.sta.password, pass, sizeof(sta.sta.password));
-        sta.sta.threshold.authmode = WIFI_AUTH_WEP; /* 尽量兼容低加密热点，密码错误由连接结果反馈 */
+    strlcpy((char *)sta.sta.ssid, s_ssid, sizeof(sta.sta.ssid));
+    if (s_pass[0] != '\0') {
+        strlcpy((char *)sta.sta.password, s_pass, sizeof(sta.sta.password));
+        sta.sta.threshold.authmode = WIFI_AUTH_WEP; /* 尽量兼容低加密热点 */
     } else {
         sta.sta.threshold.authmode = WIFI_AUTH_OPEN;
     }
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "set STA config failed: %s", esp_err_to_name(err));
+    }
+}
+
+/* 暂停自动重连 duration_ms 毫秒（配网页扫描热点期间用） */
+static void reconnect_pause(int64_t duration_ms)
+{
+    int64_t until = esp_timer_get_time() + duration_ms * 1000;
+    taskENTER_CRITICAL(&s_reconnect_lock);
+    s_reconnect_paused = true;
+    s_reconnect_resume_us = until;
+    taskEXIT_CRITICAL(&s_reconnect_lock);
+}
+
+static bool reconnect_is_paused(void)
+{
+    bool paused;
+    taskENTER_CRITICAL(&s_reconnect_lock);
+    paused = s_reconnect_paused;
+    taskEXIT_CRITICAL(&s_reconnect_lock);
+    return paused;
+}
+
+static void reconnect_resume(void)
+{
+    taskENTER_CRITICAL(&s_reconnect_lock);
+    s_reconnect_paused = false;
+    taskEXIT_CRITICAL(&s_reconnect_lock);
+}
+
+/* 暂停已到期则清除标志并返回 true（由 wifi_mgr_poll 调用） */
+static bool reconnect_resume_if_expired(int64_t now_us)
+{
+    bool expired = false;
+    taskENTER_CRITICAL(&s_reconnect_lock);
+    if (s_reconnect_paused && now_us >= s_reconnect_resume_us) {
+        s_reconnect_paused = false;
+        expired = true;
+    }
+    taskEXIT_CRITICAL(&s_reconnect_lock);
+    return expired;
+}
+
+static void sta_apply_config_and_connect(const char *ssid, const char *pass)
+{
+    const char *safe_pass = (pass != NULL) ? pass : "";
+
+    /* 凭据没变且链路本来就通：不要打断现有连接。否则 esp_wifi_connect() 会被
+     * 驱动拒绝（日志 "sta is connected, disconnect before connecting to new ap"），
+     * 状态却被我们降成 CONNECTING，之后又没有 GOT_IP 事件把它推回来。 */
+    if (strcmp(s_ssid, ssid) == 0 && strcmp(s_pass, safe_pass) == 0 && sta_link_is_up()) {
+        ESP_LOGI(TAG, "Credentials unchanged and STA already associated, keep current link");
+        reconnect_resume();
+        if (s_state == WIFI_MGR_STATE_CONNECTING) {
+            s_state = WIFI_MGR_STATE_CONNECTED;
+        }
+        return;
+    }
 
     strlcpy(s_ssid, ssid, sizeof(s_ssid));
-    strlcpy(s_pass, (pass != NULL) ? pass : "", sizeof(s_pass));
+    strlcpy(s_pass, safe_pass, sizeof(s_pass));
     s_state = WIFI_MGR_STATE_CONNECTING;
     s_retry_count = 0;
-    esp_wifi_connect();
+    reconnect_resume();      /* 新凭据优先，清掉配网页扫描留下的暂停 */
+    sta_apply_config();
+
+    if (sta_link_is_up()) {
+        /* 已连着旧热点：必须先断开，断线事件里会用新凭据自动重连。
+         * 直接 connect 会被 IDF 拒绝，换不了热点。 */
+        ESP_LOGI(TAG, "Disconnect current AP before switching to \"%s\"", ssid);
+        esp_wifi_disconnect();
+    } else {
+        esp_wifi_connect();
+    }
+}
+
+/**
+ * @brief 扫描附近热点，写入 records（最多 max 个），*num_out 为实际数量
+ *
+ * STA 正在连接时 IDF 不允许扫描（ESP_ERR_WIFI_STATE）。此时先暂停自动重连
+ * 并主动断开，等状态真正落到 idle 后再重试 —— 这是"设备换了地方、旧热点
+ * 不在、却还能重新配网"的关键。连接正常时扫描本来就被允许，不会走到这里。
+ */
+static esp_err_t portal_scan_ap(wifi_ap_record_t *records, uint16_t max, uint16_t *num_out)
+{
+    *num_out = 0;
+    wifi_scan_config_t cfg = { 0 };
+
+    esp_err_t err = esp_wifi_scan_start(&cfg, true);
+
+    /* 只有「确实在连接中、且链路并未真正建立（没拿到 IP）」时才需要断开 STA。
+     * 若只是状态机卡住而链路其实是通的，绝不能断开 —— 那会把一个正常的
+     * 连接打掉，反而让状态永远回不去（LED 一直快闪）。 */
+    if (err == ESP_ERR_WIFI_STATE &&
+        s_state == WIFI_MGR_STATE_CONNECTING && !sta_link_is_up()) {
+        ESP_LOGW(TAG_P, "STA is connecting, scan not allowed -> pause reconnect and retry");
+        reconnect_pause(PORTAL_SCAN_PAUSE_MS);
+        esp_wifi_disconnect();          /* 先置暂停标志再断开，事件里就不会抢着重连 */
+    }
+    for (int i = 0; i < 10 && err == ESP_ERR_WIFI_STATE; i++) {
+        /* 断开是异步的，最多等 500ms 让状态落下来 */
+        vTaskDelay(pdMS_TO_TICKS(50));
+        err = esp_wifi_scan_start(&cfg, true);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG_P, "scan failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    uint16_t num = 0;
+    if (esp_wifi_scan_get_ap_num(&num) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    if (num > max) {
+        num = max;
+    }
+    if (num > 0 && esp_wifi_scan_get_ap_records(&num, records) != ESP_OK) {
+        return ESP_FAIL;
+    }
+    *num_out = num;
+    ESP_LOGI(TAG_P, "scan found %u AP(s)", (unsigned)num);
+    return ESP_OK;
 }
 
 /* ==================== DNS 劫持（captive portal 的前提） ====================
@@ -527,43 +693,48 @@ static char *portal_page_build(void)
     }
     sbuf_append(&b, "</p>");
 
-    /* 扫描附近热点（阻塞约 1~2s，仅在重建页面时执行） */
+    /* 扫描附近热点（阻塞约 1~2s，仅在重建页面时执行）。表单一定要先输出：
+     * 扫描失败时如果连 <form> 都没有，手动输入框提交不了，用户就彻底没法配网了。 */
     uint16_t ap_num = 0;
-    if (esp_wifi_scan_start(&(wifi_scan_config_t){ 0 }, true) == ESP_OK &&
-        esp_wifi_scan_get_ap_num(&ap_num) == ESP_OK && ap_num > 0) {
-        if (ap_num > PORTAL_SCAN_MAX_APS) {
-            ap_num = PORTAL_SCAN_MAX_APS;
-        }
-        records = calloc(ap_num, sizeof(wifi_ap_record_t));
-        if (records != NULL && esp_wifi_scan_get_ap_records(&ap_num, records) == ESP_OK) {
-            sbuf_append(&b, "<form method=\"POST\" action=\"/save\">");
-            sbuf_append(&b, "<label>附近热点（共 %u 个，按信号强度排序）</label><select name=\"ssid\">", ap_num);
-            bool seen[PORTAL_SCAN_MAX_APS] = { false };
-            for (uint16_t i = 0; i < ap_num; i++) {
-                const char *ssid = (const char *)records[i].ssid;
-                if (ssid[0] == '\0') {
-                    continue; /* 隐藏网络无法通过选择配网 */
-                }
-                bool dup = false;
-                for (uint16_t j = 0; j < i; j++) {
-                    if (seen[j] && strcmp((const char *)records[j].ssid, ssid) == 0) {
-                        dup = true;
-                        break;
-                    }
-                }
-                if (dup) {
-                    continue;
-                }
-                seen[i] = true;
-                sbuf_append(&b, "<option value=\"");
-                html_escape_append(&b, ssid);
-                sbuf_append(&b, "\">");
-                html_escape_append(&b, ssid);
-                bool locked = (records[i].authmode != WIFI_AUTH_OPEN);
-                sbuf_append(&b, " (RSSI %d dBm%s)</option>", records[i].rssi, locked ? ", 加密" : ", 开放");
+    records = calloc(PORTAL_SCAN_MAX_APS, sizeof(wifi_ap_record_t));
+    esp_err_t scan_err = (records != NULL)
+                             ? portal_scan_ap(records, PORTAL_SCAN_MAX_APS, &ap_num)
+                             : ESP_ERR_NO_MEM;
+
+    sbuf_append(&b, "<form method=\"POST\" action=\"/save\">");
+    if (scan_err != ESP_OK) {
+        sbuf_append(&b, "<p>未获取到热点列表（%s），请手动输入热点名，或点<a href=\"/?scan=1\">重新扫描</a>。</p>",
+                    esp_err_to_name(scan_err));
+    } else if (ap_num == 0) {
+        sbuf_append(&b, "<p>没有扫描到热点，请点<a href=\"/?scan=1\">重新扫描</a>或手动输入。</p>");
+    } else {
+        sbuf_append(&b, "<label>附近热点（共 %u 个，按信号强度排序，<a href=\"/?scan=1\">重新扫描</a>）</label>"
+                        "<select name=\"ssid\">", ap_num);
+        bool seen[PORTAL_SCAN_MAX_APS] = { false };
+        for (uint16_t i = 0; i < ap_num; i++) {
+            const char *ssid = (const char *)records[i].ssid;
+            if (ssid[0] == '\0') {
+                continue; /* 隐藏网络无法通过选择配网 */
             }
-            sbuf_append(&b, "</select>");
+            bool dup = false;
+            for (uint16_t j = 0; j < i; j++) {
+                if (seen[j] && strcmp((const char *)records[j].ssid, ssid) == 0) {
+                    dup = true;
+                    break;
+                }
+            }
+            if (dup) {
+                continue;
+            }
+            seen[i] = true;
+            sbuf_append(&b, "<option value=\"");
+            html_escape_append(&b, ssid);
+            sbuf_append(&b, "\">");
+            html_escape_append(&b, ssid);
+            bool locked = (records[i].authmode != WIFI_AUTH_OPEN);
+            sbuf_append(&b, " (RSSI %d dBm%s)</option>", records[i].rssi, locked ? ", 加密" : ", 开放");
         }
+        sbuf_append(&b, "</select>");
     }
     free(records);
 
@@ -638,7 +809,9 @@ static esp_err_t portal_get_handler(httpd_req_t *req)
     }
 
     int64_t now = esp_timer_get_time();
-    if (s_page_cache == NULL || (now - s_page_cache_us) > PORTAL_SCAN_MIN_MS * 1000LL) {
+    /* ?scan=1：页面上的「重新扫描」链接，跳过 5s 缓存立即重扫 */
+    bool force_scan = (strstr(req->uri, "scan=1") != NULL);
+    if (force_scan || s_page_cache == NULL || (now - s_page_cache_us) > PORTAL_SCAN_MIN_MS * 1000LL) {
         char *fresh = portal_page_build();
         if (fresh != NULL) {
             free(s_page_cache);
@@ -770,10 +943,16 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
             }
             s_state = WIFI_MGR_STATE_CONNECTING;
             s_retry_count++;
+            if (reconnect_is_paused()) {
+                /* 配网页正在扫描热点：别抢回 STA，否则扫描又会被打断 */
+                ESP_LOGI(TAG, "STA disconnected, auto-reconnect paused for portal scan");
+                break;
+            }
             if (s_retry_count % 5 == 1) {
                 ESP_LOGW(TAG, "STA disconnected, retry #%u (ssid=\"%s\")",
                          (unsigned)s_retry_count, s_ssid);
             }
+            sta_apply_config();  /* 用当前（可能是刚提交的新）凭据重连 */
             esp_wifi_connect(); /* 立即重连 */
             break;
         }
@@ -833,7 +1012,7 @@ esp_err_t wifi_mgr_init(void)
 
     /* APSTA：AP 与 STA 各自需要默认 netif */
     s_ap_netif = esp_netif_create_default_wifi_ap();
-    esp_netif_create_default_wifi_sta();
+    s_sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t wcfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
@@ -855,15 +1034,7 @@ esp_err_t wifi_mgr_init(void)
     /* 4. 读取凭据，有则恢复连接 */
     if (cred_load()) {
         ESP_LOGI(TAG, "Saved credentials found, will reconnect to \"%s\"", s_ssid);
-        wifi_config_t sta = { 0 };
-        strlcpy((char *)sta.sta.ssid, s_ssid, sizeof(sta.sta.ssid));
-        if (s_pass[0] != '\0') {
-            strlcpy((char *)sta.sta.password, s_pass, sizeof(sta.sta.password));
-            sta.sta.threshold.authmode = WIFI_AUTH_WEP;
-        } else {
-            sta.sta.threshold.authmode = WIFI_AUTH_OPEN;
-        }
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
+        sta_apply_config();
         s_state = WIFI_MGR_STATE_CONNECTING;
     } else {
         ESP_LOGI(TAG, "No saved credentials, waiting for provisioning on \"" WIFI_AP_SSID "\"");
@@ -886,6 +1057,24 @@ esp_err_t wifi_mgr_init(void)
 void wifi_mgr_poll(void)
 {
     int64_t now = esp_timer_get_time();
+
+    /* 配网页扫描结束后恢复被暂停的自动重连（用户没提交新凭据的情况） */
+    if (reconnect_resume_if_expired(now)) {
+        if (s_ssid[0] != '\0' && s_state == WIFI_MGR_STATE_CONNECTING && !sta_link_is_up()) {
+            ESP_LOGI(TAG, "portal scan done, resume reconnect to \"%s\"", s_ssid);
+            esp_wifi_connect();
+        }
+    }
+
+    /* 状态机自愈：STA 底层其实已关联（能校时、能上网），但状态还停在 CONNECTING。
+     * 常见于「重配网时 esp_wifi_connect() 被驱动拒绝」或扫描期间的反复断开：
+     * 没有新的 GOT_IP 事件就没人把状态推回来，外网检测也被门禁挡住，LED 便一直快闪。
+     * 这里按驱动的真实关联状态把状态拉回 CONNECTED，随后外网检测会升到 INTERNET_OK。 */
+    if (s_state == WIFI_MGR_STATE_CONNECTING && sta_link_is_up()) {
+        s_state = WIFI_MGR_STATE_CONNECTED;
+        s_last_netcheck_us = 0;   /* 下一轮立刻验证外网，尽快从慢闪恢复常亮 */
+        ESP_LOGI(TAG, "STA link is up but state was CONNECTING -> CONNECTED (link recovered)");
+    }
 
     /* 已连上：周期验证外网（含从 INTERNET_OK 回退） */
     if (s_state == WIFI_MGR_STATE_CONNECTED || s_state == WIFI_MGR_STATE_INTERNET_OK) {
