@@ -44,6 +44,10 @@
 #include "codec_bus.h"
 #endif
 
+#if APP_ENABLE_CODEC_REGS
+#include "es8388_diag.h"
+#endif
+
 static const char *TAG = "APP";
 
 #define MAIN_LOOP_PERIOD_MS     1000  /* 主循环周期 */
@@ -87,6 +91,11 @@ void app_main(void)
     /* 功能 5：ES8388 控制通路验证（第 1 步）—— 只扫描，不发声 */
     ESP_ERROR_CHECK(codec_bus_init());
     codec_bus_scan();
+#endif
+
+#if APP_ENABLE_CODEC_REGS
+    /* 功能 6：寄存器读写验证（第 4 步）—— 开机跑一次，不发声 */
+    ESP_ERROR_CHECK(es8388_diag_run());
 #endif
 
 #if APP_ENABLE_TF_CARD

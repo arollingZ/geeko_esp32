@@ -7,6 +7,7 @@ idf_component_register(
          "lcd_ui.c"
          "font8x16.c"
          "codec_bus.c"
+         "es8388_diag.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_i2c
              esp_driver_spi
