@@ -40,6 +40,10 @@
 #endif
 #endif
 
+#if APP_ENABLE_I2C_SCAN
+#include "codec_bus.h"
+#endif
+
 static const char *TAG = "APP";
 
 #define MAIN_LOOP_PERIOD_MS     1000  /* 主循环周期 */
@@ -50,8 +54,9 @@ void app_main(void)
     ESP_LOGI(TAG, "==================================================");
     ESP_LOGI(TAG, " ESP32-S3M-N16R8 demo project");
     ESP_LOGI(TAG, " ESP-IDF %s", esp_get_idf_version());
-    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d",
-             APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED, APP_ENABLE_LCD);
+    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d I2C_SCAN=%d",
+             APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED, APP_ENABLE_LCD,
+             APP_ENABLE_I2C_SCAN);
     ESP_LOGI(TAG, "==================================================");
 
 #if APP_ENABLE_WIFI
@@ -78,9 +83,19 @@ void app_main(void)
 #endif
 #endif
 
+#if APP_ENABLE_I2C_SCAN
+    /* 功能 5：ES8388 控制通路验证（第 1 步）—— 只扫描，不发声 */
+    ESP_ERROR_CHECK(codec_bus_init());
+    codec_bus_scan();
+#endif
+
 #if APP_ENABLE_TF_CARD
     bool self_test_done = false;
     int tf_wait_ticks = 0; /* 距下次 TF 卡重试的主循环轮数 */
+#endif
+
+#if APP_ENABLE_I2C_SCAN
+    int i2c_rescan_ticks = 10; /* 每 10s 复扫一次 */
 #endif
 
     while (true) {
@@ -115,6 +130,14 @@ void app_main(void)
 #if APP_ENABLE_WIFI
         /* 功能 2：外网连通性验证与状态心跳（内部节流，不阻塞） */
         wifi_mgr_poll();
+#endif
+
+#if APP_ENABLE_I2C_SCAN
+        /* 功能 5：每 10s 复扫一次，方便观察热插拔/接触不良 */
+        if (--i2c_rescan_ticks <= 0) {
+            codec_bus_scan();
+            i2c_rescan_ticks = 10;
+        }
 #endif
 
         vTaskDelay(pdMS_TO_TICKS(MAIN_LOOP_PERIOD_MS));
