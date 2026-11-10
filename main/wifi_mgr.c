@@ -1018,7 +1018,12 @@ esp_err_t wifi_mgr_init(void)
     ESP_ERROR_CHECK(esp_wifi_init(&wcfg));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
 
-    /* 3. SoftAP 常开（配网入口，开放网络，readme 默认热点名） */
+    /* 3. SoftAP 常开（配网入口，开放网络，readme 默认热点名）
+     *
+     * beacon_interval 单位是 TU（1 TU ≈ 1.024ms），必须是 100 的倍数。
+     * 原来用 100（≈102ms，每秒 10 次），实测这个发射节奏会耦合进录音通路，
+     * 表现为每隔约 1 秒一次的噪声爆发。改成 1000 TU ≈ 1.02s 后，
+     * AP 自身发射活动降一个数量级；手机发现热点会慢一点，但能正常连。 */
     wifi_config_t ap_cfg = {
         .ap = {
             .ssid = WIFI_AP_SSID,
@@ -1026,7 +1031,7 @@ esp_err_t wifi_mgr_init(void)
             .channel = WIFI_AP_CHANNEL,
             .authmode = WIFI_AUTH_OPEN,
             .max_connection = WIFI_AP_MAX_CONN,
-            .beacon_interval = 100,
+            .beacon_interval = APP_WIFI_AP_BEACON_TU,
         },
     };
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
@@ -1042,6 +1047,19 @@ esp_err_t wifi_mgr_init(void)
 
     /* 5. 启动 WiFi（STA_START 事件中自动发起连接） */
     ESP_ERROR_CHECK(esp_wifi_start());
+
+    /* 5.1 限制发射功率（必须在 start 之后调用）。
+     * 录音 A/B 实测：射频开启时录音本底抬高 18~20dB，并伴随周期性爆发。
+     * 本机 RSSI 约 -37dBm，远低于灵敏度门限，10dBm 足够维持连接，
+     * 但耦合进麦克风/模拟通路的能量明显下降。 */
+    esp_err_t perr = esp_wifi_set_max_tx_power(APP_WIFI_TX_POWER_QDBM);
+    if (perr == ESP_OK) {
+        ESP_LOGI(TAG, "max tx power limited to %d.%02d dBm", 
+                 APP_WIFI_TX_POWER_QDBM / 4, (APP_WIFI_TX_POWER_QDBM % 4) * 25);
+    } else {
+        ESP_LOGW(TAG, "set max tx power failed: %s (keep default)",
+                 esp_err_to_name(perr));
+    }
 
     /* 6. 门户基础设施：DHCP 告知 DNS/门户地址 + DNS 劫持服务 */
     portal_dhcp_setup();
@@ -1106,6 +1124,21 @@ void wifi_mgr_poll(void)
 wifi_mgr_state_t wifi_mgr_get_state(void)
 {
     return s_state;
+}
+
+/* ---- 诊断专用：射频开关（录音噪声 A/B 对照用）----
+ * esp_wifi_stop() 会真正切断射频和关联，测完 esp_wifi_start() 由驱动
+ * 按已保存凭据自行重连。这两个接口不进正常流程。 */
+void wifi_mgr_radio_pause(void)
+{
+    esp_err_t err = esp_wifi_stop();
+    ESP_LOGW(TAG, "radio paused for diagnostics (%s)", esp_err_to_name(err));
+}
+
+void wifi_mgr_radio_resume(void)
+{
+    esp_err_t err = esp_wifi_start();
+    ESP_LOGW(TAG, "radio resumed (%s)", esp_err_to_name(err));
 }
 
 const char *wifi_mgr_get_ssid(void)

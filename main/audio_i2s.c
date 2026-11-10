@@ -14,6 +14,7 @@
 #include "freertos/task.h"
 
 #include "es8388.h"
+#include "feature_config.h"
 
 static const char *TAG = "audio";
 
@@ -131,6 +132,12 @@ esp_err_t audio_init(void)
 
     ESP_RETURN_ON_ERROR(es8388_config_playback(), TAG, "codec playback cfg failed");
 
+    /* MIC PGA 按 feature_config.h 配（同样必须在 I2S 时钟启动前做完）。
+     * 增益过高会把麦克风自噪声和 WiFi/电源噪声一起放大，是"回放杂音大"
+     * 的首要嫌疑，所以这里把它从数字上可控。 */
+    ESP_RETURN_ON_ERROR(es8388_set_mic_pga(REC_ADC_PGA_DB), TAG,
+                        "mic pga cfg failed");
+
     /* 在这里 dump：此时 I2S 时钟还没启动，I2C 稳定；等到时钟跑起来
      * 再 dump 会大量 timeout，读到的值不可信。 */
     es8388_dump_registers();
@@ -141,10 +148,18 @@ esp_err_t audio_init(void)
      * 启动时会打印一条 "switched from master to slave" 的 warning。 */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,
                                                             I2S_ROLE_MASTER);
-    /* DMA 5 个描述符 x 240 帧 = 50ms 缓冲。太小会欠载（断续），
-     * 太大会让"按下说话"到"数据送出"的延迟变长。 */
-    chan_cfg.dma_desc_num  = 5;
-    chan_cfg.dma_frame_num = 240;
+    /* DMA 缓冲：2026-11-10 从 5x240(50ms) 加到 8x320(约 106ms)。
+     *
+     * 原因：录音回放里出现规律性"哒哒"声。WiFi beacon 每秒 10 次，
+     * 每次射频突发都会抢占 PSRAM/缓存，录音任务（优先级 5）拼不过
+     * WiFi（优先级 23）。原来的 50ms 缓冲撑不过一次突发，RX 就会丢采样，
+     * 在波形上留下一个台阶 —— 听起来就是一声"哒"。
+     * 加宽到 106ms 后，一次 beacon 突发最多占几十毫秒，丢不了数据。
+     *
+     * 代价：播放的首包延迟从 50ms 变成约 106ms，本地回放感觉不出来；
+     * 以后做实时对话要重新权衡（那时应该走流式而不是先攒后送）。 */
+    chan_cfg.dma_desc_num  = 8;
+    chan_cfg.dma_frame_num = 320;
     /* 没数据可发时自动补零：时钟一直跑，示波器好量，
      * 也不会因为来不及写而输出上一段的残留波形。 */
     chan_cfg.auto_clear    = true;

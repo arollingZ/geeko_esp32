@@ -88,6 +88,17 @@ void es8388_dump_registers(void);
  */
 esp_err_t es8388_set_volume_db(int8_t db);
 
+/*
+ * 设置 MIC PGA 增益（R9 ADCCONTROL1），左右声道同值。
+ *
+ * db 会被夹到 0~24 并按 3dB 步进取整（数据手册只有 0000~1000 共 9 档，
+ * 即 0x00/0x11/0x22 ... 0x88）。注意厂商 esp_codec_dev 里写的是 0xBB，
+ * 那已经超出合法档位，属于未定义行为，本工程不再使用。
+ *
+ * 必须在 I2S 时钟启动前调用（时钟跑起来后 I2C 会频繁 NAK）。
+ */
+esp_err_t es8388_set_mic_pga(int db);
+
 #ifdef __cplusplus
 }
 #endif

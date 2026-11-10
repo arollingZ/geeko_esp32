@@ -55,6 +55,15 @@ wifi_mgr_state_t wifi_mgr_get_state(void);
 /** 当前连接/已保存的 SSID（未配网时返回 NULL） */
 const char *wifi_mgr_get_ssid(void);
 
+/**
+ * @brief 临时关闭/恢复射频（仅用于录音噪声诊断）
+ *
+ * 用来做 A/B 对照：关掉射频后录音若变干净，说明干扰来自 WiFi。
+ * 不是正常运行路径；resume 之后由 WiFi 驱动自行重连。
+ */
+void wifi_mgr_radio_pause(void);
+void wifi_mgr_radio_resume(void);
+
 #ifdef __cplusplus
 }
 #endif

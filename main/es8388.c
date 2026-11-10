@@ -142,9 +142,15 @@ esp_err_t es8388_config_playback(void)
         { 0x2F, 0x1E },  /* ROUT1 */
         { 0x30, 0x1E },  /* LOUT2 */
         { 0x31, 0x1E },  /* ROUT2 */
-        /* ADC 侧（虽然暂不录音，但保证与可用配置一致） */
+        /* ADC 侧（虽然暂不录音，但保证与可用配置一致）
+         *
+         * R9 = 0x88: MIC PGA 左右都是档位 8 = +24dB（数据手册上限）。
+         * 原来照抄厂商驱动的 0xBB，但 0xBB 的低/高 4 位都是 0xB，
+         * 而合法档位只有 0~8，0xB 属于未定义值——录音底噪异常大很可能
+         * 跟它有关。真正生效的值随后由 es8388_set_mic_pga() 按
+         * feature_config.h 的 REC_ADC_PGA_DB 覆盖，这里只是给个安全默认。 */
         { 0x03, 0xFF },  /* ADCPOWER: 先全掉电 */
-        { 0x09, 0xBB },  /* ADCCONTROL1: MIC PGA 双声道 +24dB */
+        { 0x09, 0x88 },  /* ADCCONTROL1: MIC PGA 双声道 +24dB（合法档位） */
         { 0x0A, 0x00 },  /* ADCCONTROL2: LIN1/RIN1 作 ADC 输入 */
         { 0x0B, 0x02 },  /* ADCCONTROL3 */
         { 0x0C, 0x0C },  /* ADCCONTROL4: 16bit, I2S 格式 */
@@ -295,6 +301,27 @@ esp_err_t es8388_set_volume_db(int8_t db)
                             "R0x%02x failed", reg);
     }
     ESP_LOGI(TAG, "volume %d dB: digital=0x%02x analog=0x%02x", db, vol, analog);
+    return ESP_OK;
+}
+
+esp_err_t es8388_set_mic_pga(int db)
+{
+    ESP_RETURN_ON_ERROR(es8388_attach(), TAG, "attach failed");
+
+    if (db < 0) {
+        db = 0;
+    }
+    if (db > 24) {
+        db = 24;
+    }
+    /* 数据手册：MIC PGA 只有 0000~1000 共 9 档，0~+24dB 步进 3dB。
+     * 高 4 位是左声道、低 4 位是右声道，两路同值。 */
+    uint8_t code = (uint8_t)(db / 3);
+    uint8_t v = (uint8_t)((code << 4) | code);
+
+    ESP_RETURN_ON_ERROR(es8388_reg_write(ES8388_REG_ADCCONTROL1, v), TAG,
+                        "write R9 failed");
+    ESP_LOGI(TAG, "mic PGA %d dB (R9=0x%02x)", code * 3, v);
     return ESP_OK;
 }
 
