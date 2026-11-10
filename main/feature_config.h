@@ -63,15 +63,26 @@
 #define APP_ENABLE_CODEC_REGS 1
 
 /* ---------------- 功能 7：I2S 时钟 + 喇叭播放验证（语音翻译机 第 2/3/5 步） ----------------
- * 起独立任务：初始化 I2S 全双工（24kHz/16bit/立体声，ESP32 主、codec 从），
- * 软复位并配置 ES8388 播放通路，打开功放（IO42 高）。
+ * 起独立任务：初始化 I2S（24kHz/16bit/立体声，ESP32 主、codec 从），
+ * 软复位并配置 ES8388 播放通路，打开功放（IO42，低电平有效）。
  *
- * 蜂鸣开关 APP_AUDIO_BEEP：
- *   1 = 每 2s 静音后播 400ms 的 1kHz 正弦（振幅 8%，约 -22dBFS），
- *       用于听声验证 DAC + 功放 + 喇叭；
- *   0 = 只写静音，时钟照常运行，用于安静地量 MCLK/BCLK/WS。
+ * 2026-11-10：已验证通过（用户确认听到 440Hz 声音），按需求先关闭，
+ * 避免持续发声干扰后续调试。代码保留，需要时改回 1 即可。
  *
- * 注意：会真的发声。插着耳机时声音会同时进耳机。
+ * 排障用法（无声音时按这个顺序开）：
+ *   1. APP_ENABLE_AUDIO_TEST=1 + APP_AUDIO_BEEP=0
+ *      -> 只有时钟在跑、持续写静音，安静。适合量 MCLK/BCLK/WS 波形。
+ *   2. APP_ENABLE_AUDIO_TEST=1 + APP_AUDIO_BEEP=1
+ *      -> 每 1.5s 播 440Hz/1.5s 正弦（振幅 50%），听声验证 DAC+功放+喇叭。
+ *   3. 两者都开时会打印完整寄存器 dump 和关键位解读
+ *      （R0 EnRef / R4 输出使能 / R8 主从 / R19 静音 / 音量），
+ *      可直接定位是哪一环没配好。
+ *
+ * 已知坑（复现时别重踩）：
+ *   - R19 bit2 是 DAC 静音位，复位默认带静音，必须显式清
+ *   - R0 要写 0x16 而不是 0x12，bit2 EnRef 必须为 1（参考电压使能）
+ *   - 功放 IO42 是低电平使能（SPK_EN_ACTIVE_LOW）
+ *   - 所有 I2C 配置必须在 i2s_channel_enable() 之前完成
  */
-#define APP_ENABLE_AUDIO_TEST 1
-#define APP_AUDIO_BEEP        1
+#define APP_ENABLE_AUDIO_TEST 0
+#define APP_AUDIO_BEEP        0

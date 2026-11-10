@@ -38,6 +38,8 @@ static void audio_test_task(void *arg)
 #endif
 
     uint32_t beeps = 0;
+    (void)beeps;   /* APP_AUDIO_BEEP=0 时只用于计数日志，会被优化掉 */
+
     while (true) {
         err = audio_write_silence(SILENCE_MS);
         if (err != ESP_OK) {
