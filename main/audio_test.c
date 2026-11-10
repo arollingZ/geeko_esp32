@@ -12,12 +12,12 @@
 
 static const char *TAG = "audio_test";
 
-#define TONE_FREQ_HZ     1000
-#define TONE_MS          400
-#define SILENCE_MS       2000
-/* 振幅取满量程的 8%（约 -22 dBFS）：能清楚听到，又不至于吓人。
- * 第一次验证通路时宁可小一点，确认无误后再用 es8388_set_volume_db 调大。 */
-#define TONE_AMPLITUDE   0.08f
+#define TONE_FREQ_HZ     440
+#define TONE_MS          1500
+#define SILENCE_MS       1500
+/* 振幅调到满量程的 50%（约 -6 dBFS）。之前 8% 太小，功放增益不高时
+ * 很容易误判成"没声音"。确认能听到之后再按需调低。 */
+#define TONE_AMPLITUDE   0.50f
 
 static void audio_test_task(void *arg)
 {

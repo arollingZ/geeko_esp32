@@ -3,6 +3,8 @@
  */
 #include "es8388.h"
 
+#include <stdio.h>
+
 #include "codec_bus.h"
 #include "driver/i2c_master.h"
 #include "esp_check.h"
@@ -98,18 +100,32 @@ esp_err_t es8388_config_playback(void)
                         TAG, "chip is in reset (R0=0x%02x), call soft_reset first",
                         r0);
 
-    /* 每个依赖的寄存器都显式写，不假设当前状态。数值取自 esp_codec_dev
-     * 在该板上的验证过的序列（xiaozhi 实测可用），仅把主从模式改成明确的
-     * 从机（0x00），而不是原驱动的 bool 写法（实际落到 0x01，语义含糊）。 */
+    /* 每个依赖的寄存器都显式写，不假设当前状态。数值严格复刻
+     * esp_codec_dev 在该板上验证过的 open 序列（xiaozhi 实测能出声），
+     * 仅把主从模式改成明确的从机（0x00），而不是原驱动的 bool 写法
+     * （实际落到 0x01，语义含糊）。
+     *
+     * 三个容易漏、漏了就完全没声音的点：
+     *   1. 先写 0x19=0x04 主动静音，配置过程中不出杂音，最后再解除
+     *   2. DACCONTROL21(0x2B) 变化后必须重启状态机（0xF0 -> 0x00），
+     *      否则 DAC 状态机停在 power-down 状态，时钟有、数据有、就是没声
+     *   3. ADC 部分也要配（0x03=0x09 上电）。虽然这一阶段只播放，
+     *      但模拟参考是共用的，ADC 全掉电时 DAC 参考可能不稳。 */
     static const struct { uint8_t reg; uint8_t val; } seq[] = {
-        { 0x01, 0x50 },  /* CONTROL2: LPVrefBuf=1, PdnAna=0 模拟部分上电 */
-        { 0x02, 0x00 },  /* CHIPPOWER: 全部正常工作（不复位、DLL 不关） */
-        { 0x35, 0xA0 },  /* 关内部 DLL（驱动同款，改善低采样率） */
+        { 0x19, 0x04 },  /* DACCONTROL3: 主动静音（bit2=1），配置期间无杂音 */
+        { 0x01, 0x50 },  /* CONTROL2: 模拟部分上电（PdnAna=0） */
+        { 0x02, 0x00 },  /* CHIPPOWER: 全部正常工作 */
+        { 0x35, 0xA0 },  /* 关内部 DLL（驱动同款，改善低采样率时钟） */
         { 0x37, 0xD0 },
         { 0x39, 0xD0 },
         { 0x08, 0x00 },  /* MASTERMODE: MSC=0 -> I2S 从机（ESP32 作主） */
         { 0x04, 0xC0 },  /* DACPOWER: 先全关，避免开输出瞬间的爆音 */
-        { 0x00, 0x12 },  /* CONTROL1: SameFs=1(ADC/DAC 同 LRCK), VMIDSEL=10 */
+        /* R0 = 0x16: SameFs=1(ADC/DAC 共用 LRCK), EnRef=1(参考电压使能),
+         * VMIDSEL=10(500kΩ)。
+         * 注意不是 0x12：0x12 的 bit2=0 会关闭参考电压（手冊 R0 bit2
+         * EnRef，复位默认 1）。参考被禁时模拟部分整体不工作，
+         * 表现就是"寄存器全对、时钟全对、一点声音都没有"。 */
+        { 0x00, 0x16 },
         { 0x17, 0x18 },  /* DACCONTROL1: 16bit, I2S 格式 */
         { 0x18, 0x02 },  /* DACCONTROL2: 单速, DACFsRatio=256 (MCLK=256Fs) */
         { 0x26, 0x00 },  /* DACCONTROL16: DAC 输入选 LIN1/RIN1 */
@@ -120,14 +136,30 @@ esp_err_t es8388_config_playback(void)
         { 0x1A, 0x00 },  /* LDACVOL: 0x00 = 0dB（该寄存器是反比编码） */
         { 0x1B, 0x00 },  /* RDACVOL: 0x00 = 0dB */
         /* 模拟输出音量（非反比编码）：0x1E=0dB, 0x00=-30dB。
-         * 四路都开 0dB——喇叭功放接在哪一路目前只有原理图能确认，
-         * 四路全开可避免"配了一路却没接对"导致没声音。 */
+         * 四路都给 0dB——喇叭功放接在哪一路只能看原理图，四路全开
+         * 可避免"配了一路却没接对"导致没声音。 */
         { 0x2E, 0x1E },  /* LOUT1 */
         { 0x2F, 0x1E },  /* ROUT1 */
         { 0x30, 0x1E },  /* LOUT2 */
         { 0x31, 0x1E },  /* ROUT2 */
-        /* 注意：这里不打开 DACPOWER。输出级由 es8388_output_enable()
-         * 在时钟稳定、数据线已是静音之后再打开，避免爆音。 */
+        /* ADC 侧（虽然暂不录音，但保证与可用配置一致） */
+        { 0x03, 0xFF },  /* ADCPOWER: 先全掉电 */
+        { 0x09, 0xBB },  /* ADCCONTROL1: MIC PGA 双声道 +24dB */
+        { 0x0A, 0x00 },  /* ADCCONTROL2: LIN1/RIN1 作 ADC 输入 */
+        { 0x0B, 0x02 },  /* ADCCONTROL3 */
+        { 0x0C, 0x0C },  /* ADCCONTROL4: 16bit, I2S 格式 */
+        { 0x0D, 0x02 },  /* ADCCONTROL5: 单速, 256Fs */
+        { 0x10, 0x00 },  /* ADCCONTROL8: LADC 音量 0dB */
+        { 0x11, 0x00 },  /* ADCCONTROL9: RADC 音量 0dB */
+        { 0x03, 0x09 },  /* ADCPOWER: 上电 ADC */
+        /* 解除静音 + 打开输出级，都放在这里（无时钟时）完成。
+         * 原因：实测 I2S 时钟一旦运行，I2C 写就会开始 NAK
+         * （ESP_ERR_INVALID_RESPONSE），配置阶段连写 30 个寄存器却零错误。
+         * 所以全部 I2C 操作必须在时钟启动前做完。
+         * 顺序上先解除静音再开输出：此时模拟输出还没打开，不会出声，
+         * 开时钟时 DOUT 上又是静音数据，所以也不会有爆音。 */
+        { 0x19, 0x00 },  /* DACCONTROL3: 解除静音 */
+        { 0x04, 0x3C },  /* DACPOWER: DAC 上电 + 四路输出使能 */
     };
 
     for (size_t i = 0; i < sizeof(seq) / sizeof(seq[0]); i++) {
@@ -136,13 +168,26 @@ esp_err_t es8388_config_playback(void)
                             seq[i].reg, seq[i].val);
     }
 
+    /* 状态机重启：DACCONTROL21 改过之后必须做，否则状态机停在
+     * power-down，表现为时钟/数据都对但完全没声音。 */
+    ESP_RETURN_ON_ERROR(es8388_reg_write(0x02, 0xF0), TAG, "stm reset failed");
+    vTaskDelay(pdMS_TO_TICKS(5));
+    ESP_RETURN_ON_ERROR(es8388_reg_write(0x02, 0x00), TAG, "stm start failed");
+    vTaskDelay(pdMS_TO_TICKS(20));
+
     /* 回读关键寄存器，确认配置真的落地（写入不报错不等于生效） */
-    uint8_t v8 = 0, v17 = 0;
+    uint8_t v8 = 0, v17 = 0, v19 = 0, v2b = 0, v3 = 0, v4 = 0;
     ESP_RETURN_ON_ERROR(es8388_reg_read(0x08, &v8), TAG, "read R8 failed");
     ESP_RETURN_ON_ERROR(es8388_reg_read(0x17, &v17), TAG, "read R0x17 failed");
+    ESP_RETURN_ON_ERROR(es8388_reg_read(0x19, &v19), TAG, "read R0x19 failed");
+    ESP_RETURN_ON_ERROR(es8388_reg_read(0x2B, &v2b), TAG, "read R0x2B failed");
+    ESP_RETURN_ON_ERROR(es8388_reg_read(0x03, &v3), TAG, "read R0x03 failed");
+    ESP_RETURN_ON_ERROR(es8388_reg_read(0x04, &v4), TAG, "read R0x04 failed");
 
-    ESP_LOGI(TAG, "playback cfg: R8=0x%02x (%s) R0x17=0x%02x (16bit I2S), "
-             "outputs still OFF", v8, (v8 & 0x80) ? "MASTER!" : "slave", v17);
+    ESP_LOGI(TAG, "playback cfg: R8=0x%02x(%s) R17=0x%02x R19=0x%02x(mute=%d) "
+             "R2B=0x%02x R3=0x%02x R4=0x%02x",
+             v8, (v8 & 0x80) ? "MASTER!" : "slave", v17, v19, !!(v19 & 0x04),
+             v2b, v3, v4);
 
     if (v8 & 0x80) {
         ESP_LOGE(TAG, "R8 bit7=1: codec is master, will fight ESP32 for BCLK/WS");
@@ -160,6 +205,69 @@ esp_err_t es8388_output_enable(bool on)
                         "write R4 failed");
     ESP_LOGI(TAG, "outputs %s (R4=0x%02x)", on ? "ON" : "OFF", on ? 0x3C : 0xC0);
     return ESP_OK;
+}
+
+esp_err_t es8388_mute(bool mute)
+{
+    ESP_RETURN_ON_ERROR(es8388_attach(), TAG, "attach failed");
+    /* R0x19 bit2 = DACMU。只改这一位，保留其他配置。 */
+    uint8_t v = 0;
+    ESP_RETURN_ON_ERROR(es8388_reg_read(0x19, &v), TAG, "read R0x19 failed");
+    v = (uint8_t)((v & ~0x04) | (mute ? 0x04 : 0x00));
+    ESP_RETURN_ON_ERROR(es8388_reg_write(0x19, v), TAG, "write R0x19 failed");
+    ESP_LOGI(TAG, "%s (R0x19=0x%02x)", mute ? "DAC muted" : "DAC unmuted", v);
+    return ESP_OK;
+}
+
+void es8388_dump_registers(void)
+{
+    if (s_dev == NULL) {
+        ESP_LOGW(TAG, "not attached, cannot dump");
+        return;
+    }
+    ESP_LOGI(TAG, "--- register dump ---");
+    for (int base = 0x00; base <= 0x30; base += 8) {
+        char line[112];
+        int pos = snprintf(line, sizeof(line), "  %02x: ", base);
+        for (int i = 0; i < 8; i++) {
+            uint8_t v = 0;
+            if (es8388_reg_read((uint8_t)(base + i), &v) == ESP_OK) {
+                pos += snprintf(line + pos, sizeof(line) - pos, "%02x ", v);
+            } else {
+                pos += snprintf(line + pos, sizeof(line) - pos, "?? ");
+            }
+        }
+        ESP_LOGI(TAG, "%s", line);
+    }
+
+    /* 关键值解读：没声音时这几项是最先要看的 */
+    uint8_t r0 = 0, r2 = 0, r4 = 0, r8 = 0, r17 = 0, r19 = 0, r1a = 0, r2b = 0;
+    uint8_t r2e = 0, r2f = 0, r30 = 0, r31 = 0;
+    es8388_reg_read(0x00, &r0);   es8388_reg_read(0x02, &r2);
+    es8388_reg_read(0x04, &r4);   es8388_reg_read(0x08, &r8);
+    es8388_reg_read(0x17, &r17);  es8388_reg_read(0x19, &r19);
+    es8388_reg_read(0x1A, &r1a);  es8388_reg_read(0x2B, &r2b);
+    es8388_reg_read(0x2E, &r2e);  es8388_reg_read(0x2F, &r2f);
+    es8388_reg_read(0x30, &r30);  es8388_reg_read(0x31, &r31);
+
+    ESP_LOGI(TAG, "--- key values ---");
+    ESP_LOGI(TAG, "  R0 =0x%02x  SCPReset=%d(power-on reset trigger!) "
+             "EnRef=%d(ref enable) VMIDSEL=%d",
+             r0, !!(r0 & 0x80), !!(r0 & 0x04), r0 & 0x03);
+    ESP_LOGI(TAG, "  R2 =0x%02x  DAC stm_rst=%d(1=power-down) DLL_PDN=%d "
+             "Vref_PDN=%d", r2, !!(r2 & 0x10), !!(r2 & 0x04), !!(r2 & 0x01));
+    ESP_LOGI(TAG, "  R4 =0x%02x  DACL_PDN=%d DACR_PDN=%d | LOUT1=%d ROUT1=%d "
+             "LOUT2=%d ROUT2=%d", r4, !!(r4 & 0x80), !!(r4 & 0x40),
+             !!(r4 & 0x20), !!(r4 & 0x10), !!(r4 & 0x08), !!(r4 & 0x04));
+    ESP_LOGI(TAG, "  R8 =0x%02x  MSC=%d(0=slave,1=master!)", r8, !!(r8 & 0x80));
+    ESP_LOGI(TAG, "  R17=0x%02x  DACWL=%d(011=16bit) FMT=%d(00=I2S)",
+             r17, (r17 >> 3) & 0x07, (r17 >> 1) & 0x03);
+    ESP_LOGI(TAG, "  R19=0x%02x  DACMU=%d(1=MUTED!)", r19, !!(r19 & 0x04));
+    ESP_LOGI(TAG, "  R1A=0x%02x  LDAC vol(%s)", r1a,
+             r1a == 0 ? "0dB max" : "attenuated");
+    ESP_LOGI(TAG, "  R2B=0x%02x  DAC LRCK sel=%d", r2b, (r2b >> 7) & 0x03);
+    ESP_LOGI(TAG, "  analog vol: LOUT1=0x%02x ROUT1=0x%02x LOUT2=0x%02x "
+             "ROUT2=0x%02x (0x1E=0dB, 0x00=-30dB)", r2e, r2f, r30, r31);
 }
 
 esp_err_t es8388_set_volume_db(int8_t db)

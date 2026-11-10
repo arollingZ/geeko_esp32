@@ -120,7 +120,7 @@ void app_main(void)
     int tf_wait_ticks = 0; /* 距下次 TF 卡重试的主循环轮数 */
 #endif
 
-#if APP_ENABLE_I2C_SCAN
+#if APP_ENABLE_I2C_SCAN && !APP_ENABLE_AUDIO_TEST
     int i2c_rescan_ticks = 10; /* 每 10s 复扫一次 */
 #endif
 
@@ -158,8 +158,10 @@ void app_main(void)
         wifi_mgr_poll();
 #endif
 
-#if APP_ENABLE_I2C_SCAN
-        /* 功能 5：每 10s 复扫一次，方便观察热插拔/接触不良 */
+#if APP_ENABLE_I2C_SCAN && !APP_ENABLE_AUDIO_TEST
+        /* 功能 5：每 10s 复扫一次，方便观察热插拔/接触不良。
+         * 音频启用时不做：实测 I2S 时钟运行后 I2C 会持续 timeout，
+         * 复扫只会刷满错误日志，且对排查没有帮助。 */
         if (--i2c_rescan_ticks <= 0) {
             codec_bus_scan();
             i2c_rescan_ticks = 10;

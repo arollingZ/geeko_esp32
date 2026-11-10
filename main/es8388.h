@@ -74,6 +74,15 @@ esp_err_t es8388_config_playback(void);
 esp_err_t es8388_output_enable(bool on);
 
 /*
+ * DAC 静音开关（R0x19 的 bit2）。
+ * 配置阶段默认静音，避免配置过程中的杂音；开始播放在即再解除。
+ */
+esp_err_t es8388_mute(bool mute);
+
+/* 打印全部 0x00~0x34 寄存器 + 关键值解读，用于定位"没声音" */
+void es8388_dump_registers(void);
+
+/*
  * 音量设置。dB 范围 -96 ~ 0，0 为最大。
  * 数字音量（0x1A/0x1B）与模拟输出音量（0x2E~0x31）一起调整。
  */
