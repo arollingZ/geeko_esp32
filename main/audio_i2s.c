@@ -51,15 +51,17 @@ static const char *TAG = "audio";
 
 /* 写超时：一次最多写 100ms 音频，给 1s 余量足够 */
 #define I2S_WRITE_TIMEOUT_MS  1000
+/* 单次读超时：20ms 一块，给 200ms 余量 */
+#define I2S_READ_TIMEOUT_MS   200
 
 /* 100ms 的样本数，用于分块写（便于中途响应） */
 #define CHUNK_FRAMES    (AUDIO_SAMPLE_RATE / 10)
 #define CHUNK_BYTES     (CHUNK_FRAMES * AUDIO_FRAME_BYTES)
 
 static i2s_chan_handle_t s_tx = NULL;
-/* 录音通道，当前阶段（只验证播放）暂不创建，做录音时启用 */
 static i2s_chan_handle_t s_rx = NULL;
 static bool s_inited = false;
+static bool s_spk_on = false;
 
 /* 复用的分块缓冲（立体声交织 int16） */
 static int16_t s_buf[CHUNK_FRAMES * AUDIO_CHANNELS];
@@ -133,10 +135,10 @@ esp_err_t audio_init(void)
      * 再 dump 会大量 timeout，读到的值不可信。 */
     es8388_dump_registers();
 
-    /* ---- 3. I2S：先只开 TX 单工 ----
-     * 这一阶段只验证播放。全双工在 ESP32-S3 上会把 RX 通道强制切成从机
-     * 并与 TX 共享 BCLK/WS，多一层耦合就多一个排查变量。等做录音时
-     * 再改成 tx+rx 同时创建。 */
+    /* ---- 3. I2S：全双工（TX + RX 同一端口，共享 BCLK/WS）----
+     * RX 必须存在才能在录音时拿到数据。全双工下驱动会把 RX 通道
+     * 强制切成 slave（由 TX 产生的时钟驱动），这是正常行为，
+     * 启动时会打印一条 "switched from master to slave" 的 warning。 */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0,
                                                             I2S_ROLE_MASTER);
     /* DMA 5 个描述符 x 240 帧 = 50ms 缓冲。太小会欠载（断续），
@@ -147,7 +149,7 @@ esp_err_t audio_init(void)
      * 也不会因为来不及写而输出上一段的残留波形。 */
     chan_cfg.auto_clear    = true;
 
-    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx, NULL), TAG,
+    ESP_RETURN_ON_ERROR(i2s_new_channel(&chan_cfg, &s_tx, &s_rx), TAG,
                         "i2s_new_channel failed");
 
     i2s_std_config_t std_cfg = {
@@ -170,30 +172,62 @@ esp_err_t audio_init(void)
 
     ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_tx, &std_cfg), TAG,
                         "i2s tx init failed");
+    ESP_RETURN_ON_ERROR(i2s_channel_init_std_mode(s_rx, &std_cfg), TAG,
+                        "i2s rx init failed");
 
     /* ---- 4. 使能 TX：MCLK/BCLK/WS 立刻开始输出 ----
      * 此时 codec 已是从机且已解除静音、输出级已打开，DOUT 上是 0。
      * 所以时钟一起就能正常出声，且不会有爆音。 */
     ESP_RETURN_ON_ERROR(i2s_channel_enable(s_tx), TAG, "i2s tx enable failed");
 
+    /* RX 必须显式使能，否则 i2s_channel_read() 会返回 INVALID_STATE。
+     * 全双工下 RX 的时钟来自 TX，所以要在 TX 之后使能。 */
+    ESP_RETURN_ON_ERROR(i2s_channel_enable(s_rx), TAG, "i2s rx enable failed");
+
     /* 先送几帧静音，确保数据线是确定的低电平，而不是悬空 */
     ESP_RETURN_ON_ERROR(audio_write_silence(80), TAG, "silence failed");
 
-    /* ---- 5. 最后开功放 ---- */
-    ESP_RETURN_ON_ERROR(gpio_set_level(PIN_SPK_EN, SPK_LEVEL_ON), TAG,
-                        "spk_en on failed");
-
     s_inited = true;
-    ESP_LOGI(TAG, "audio up: %d Hz / %d bit / %d ch, codec slave, "
-             "spk_en=IO%d ON (active %s, level=%d)",
-             AUDIO_SAMPLE_RATE, AUDIO_BITS, AUDIO_CHANNELS, PIN_SPK_EN,
-             SPK_EN_ACTIVE_LOW ? "LOW" : "HIGH", SPK_LEVEL_ON);
-    ESP_LOGI(TAG, "spk_en reads %d (expect %d) | phone_ck=%d (%s)",
-             gpio_get_level(PIN_SPK_EN), SPK_LEVEL_ON,
-             gpio_get_level(PIN_PHONE_CK),
+    ESP_LOGI(TAG, "audio up (full duplex): %d Hz / %d bit / %d ch, "
+             "codec slave, spk OFF", AUDIO_SAMPLE_RATE, AUDIO_BITS,
+             AUDIO_CHANNELS);
+    ESP_LOGI(TAG, "phone_ck=%d (%s)", gpio_get_level(PIN_PHONE_CK),
              gpio_get_level(PIN_PHONE_CK) ? "HEADPHONE" : "no headphone");
     audio_log_clocks();
     return ESP_OK;
+}
+
+esp_err_t audio_spk_enable(bool on)
+{
+    if (on == s_spk_on) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(gpio_set_level(PIN_SPK_EN,
+                                       on ? SPK_LEVEL_ON : SPK_LEVEL_OFF),
+                        TAG, "spk_en set failed");
+    s_spk_on = on;
+    ESP_LOGI(TAG, "speaker amp %s (IO42=%d)", on ? "ON" : "OFF",
+             gpio_get_level(PIN_SPK_EN));
+    return ESP_OK;
+}
+
+esp_err_t audio_read(void *pcm, size_t want_bytes, size_t *out_read,
+                     uint32_t timeout_ms)
+{
+    if (s_rx == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    size_t got = 0;
+    esp_err_t err = i2s_channel_read(s_rx, pcm, want_bytes, &got, timeout_ms);
+    if (out_read != NULL) {
+        *out_read = got;
+    }
+    /* 超时说明这一块暂时没数据，不算错误：让调用方按 got 处理即可。
+     * 录音循环里靠它保持灵活（可以及时响应停止请求）。 */
+    if (err == ESP_ERR_TIMEOUT) {
+        return ESP_OK;
+    }
+    return err;
 }
 
 esp_err_t audio_write(const void *pcm, size_t bytes)

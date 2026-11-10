@@ -53,10 +53,42 @@
 #include "audio_test.h"
 #endif
 
+#if APP_ENABLE_RECORDER
+/* 录音模块用 AUDIO_SAMPLE_RATE 打印配置，这里也要 include。
+ * 不能只在 APP_ENABLE_AUDIO_TEST 分支里 include：两个开关是独立的，
+ * 录音功能启用而 beep 测试关闭时就会漏掉。 */
+#include "audio_i2s.h"
+#include "recorder.h"
+#endif
+
+#if APP_ENABLE_BUTTON
+#include "button.h"
+#endif
+
 static const char *TAG = "APP";
 
 #define MAIN_LOOP_PERIOD_MS     1000  /* 主循环周期 */
 #define TFCARD_RETRY_PERIOD_MS 5000  /* TF 卡挂载失败重试间隔 */
+
+#if APP_ENABLE_BUTTON && APP_ENABLE_RECORDER
+/* 按键事件 -> 录音/回放。
+ * 注意：本回调在按键任务里执行，只能做非阻塞操作。
+ * recorder_* 都是"投递命令后立即返回"，符合要求。 */
+static void on_button_event(button_event_t evt)
+{
+    switch (evt) {
+    case BUTTON_EVT_LONG_START:   /* 按住满 300ms：开始录音 */
+        recorder_record_start();
+        break;
+    case BUTTON_EVT_LONG_END:     /* 松开：停止录音 */
+        recorder_record_stop();
+        break;
+    case BUTTON_EVT_SHORT_PRESS:  /* 短按：回放 */
+        recorder_play_start();
+        break;
+    }
+}
+#endif
 
 void app_main(void)
 {
@@ -64,10 +96,11 @@ void app_main(void)
     ESP_LOGI(TAG, " ESP32-S3M-N16R8 demo project");
     ESP_LOGI(TAG, " ESP-IDF %s", esp_get_idf_version());
     ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d I2C_SCAN=%d "
-             "CODEC_REGS=%d AUDIO=%d/BEEP=%d",
+             "CODEC_REGS=%d AUDIO=%d/BEEP=%d RECORDER=%d BUTTON=%d",
              APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED, APP_ENABLE_LCD,
              APP_ENABLE_I2C_SCAN, APP_ENABLE_CODEC_REGS,
-             APP_ENABLE_AUDIO_TEST, APP_AUDIO_BEEP);
+             APP_ENABLE_AUDIO_TEST, APP_AUDIO_BEEP,
+             APP_ENABLE_RECORDER, APP_ENABLE_BUTTON);
     ESP_LOGI(TAG, "==================================================");
 
 #if APP_ENABLE_WIFI
@@ -115,12 +148,27 @@ void app_main(void)
              AUDIO_SAMPLE_RATE, APP_AUDIO_BEEP);
 #endif
 
+#if APP_ENABLE_RECORDER
+    /* 功能 8：录音 + 回放。内部任务会异步初始化 I2S 全双工，
+     * 不阻塞开机；用户第一次按键时通路已就绪。 */
+    ESP_ERROR_CHECK(recorder_init());
+    ESP_LOGI(TAG, " feature 8: recorder ready (mono %d Hz, max %d s)",
+             AUDIO_SAMPLE_RATE, REC_MAX_SECONDS);
+#endif
+
+#if APP_ENABLE_BUTTON && APP_ENABLE_RECORDER
+    /* 功能 8：BOOT 按键（长按录音 / 短按回放） */
+    ESP_ERROR_CHECK(button_init(on_button_event));
+#endif
+
 #if APP_ENABLE_TF_CARD
     bool self_test_done = false;
     int tf_wait_ticks = 0; /* 距下次 TF 卡重试的主循环轮数 */
 #endif
 
-#if APP_ENABLE_I2C_SCAN && !APP_ENABLE_AUDIO_TEST
+    /* I2S 时钟一旦运行，I2C 访问会持续 timeout（实测），
+     * 所以只要音频/录音在用，就不要做周期性 I2C 复扫，否则刷满错误日志。 */
+#if APP_ENABLE_I2C_SCAN && !APP_ENABLE_AUDIO_TEST && !APP_ENABLE_RECORDER
     int i2c_rescan_ticks = 10; /* 每 10s 复扫一次 */
 #endif
 
@@ -158,9 +206,9 @@ void app_main(void)
         wifi_mgr_poll();
 #endif
 
-#if APP_ENABLE_I2C_SCAN && !APP_ENABLE_AUDIO_TEST
+#if APP_ENABLE_I2C_SCAN && !APP_ENABLE_AUDIO_TEST && !APP_ENABLE_RECORDER
         /* 功能 5：每 10s 复扫一次，方便观察热插拔/接触不良。
-         * 音频启用时不做：实测 I2S 时钟运行后 I2C 会持续 timeout，
+         * 音频/录音启用时不做：实测 I2S 时钟运行后 I2C 会持续 timeout，
          * 复扫只会刷满错误日志，且对排查没有帮助。 */
         if (--i2c_rescan_ticks <= 0) {
             codec_bus_scan();

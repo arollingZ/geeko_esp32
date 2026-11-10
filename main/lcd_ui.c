@@ -25,6 +25,9 @@
 #if APP_ENABLE_WIFI
 #include "wifi_mgr.h"
 #endif
+#if APP_ENABLE_RECORDER
+#include "recorder.h"
+#endif
 
 static const char *TAG = "LCD_UI";
 
@@ -32,6 +35,9 @@ static const char *TAG = "LCD_UI";
 #define UI_BG_COLOR         LCD_COLOR_BLACK
 #define UI_TIME_COLOR       LCD_COLOR_WHITE
 #define UI_SSID_COLOR       LCD_COLOR_CYAN
+#define UI_REC_COLOR        LCD_COLOR_RED      /* 录音中：红，警示感 */
+#define UI_PLAY_COLOR       LCD_COLOR_GREEN    /* 回放中：绿 */
+#define UI_MSG_COLOR        LCD_COLOR_YELLOW   /* 无录音等提示 */
 
 #define UI_LINE_H           FONT8X16_H          /* 16px */
 #define UI_TIME_Y           18                  /* 第一行文字顶部 */
@@ -141,19 +147,75 @@ static void build_ssid_line(char *out, size_t out_sz)
     snprintf(out, out_sz, "no wifi config");
 }
 
+/* 把毫秒格式化成 mm:ss（录音时长显示用） */
+static void fmt_mmss(char *out, size_t out_sz, uint32_t ms)
+{
+    uint32_t total_s = ms / 1000;
+    snprintf(out, out_sz, "%02u:%02u",
+             (unsigned)(total_s / 60), (unsigned)(total_s % 60));
+}
+
+/* 秒数向上取整：剩 0.3s 时显示 "1s" 而不是 "0s"，
+ * 避免用户以为已经播完但喇叭还有声音。 */
+static uint32_t ceil_sec(uint32_t ms)
+{
+    return (ms + 999) / 1000;
+}
+
+/*
+ * 第二行最终内容 + 颜色。
+ *   空闲   -> WiFi 名称（青）
+ *   录音中 -> "REC 00:05"（红）
+ *   回放中 -> "PLAY 12s left 7s"（绿）  总共 12 秒，还剩 7 秒
+ *   无录音 -> "NO RECORDING"（黄）
+ */
+static void build_status_line(char *out, size_t out_sz, uint16_t *color)
+{
+#if APP_ENABLE_RECORDER
+    switch (recorder_get_state()) {
+    case RECORDER_RECORDING: {
+        char t[12];
+        fmt_mmss(t, sizeof(t), recorder_recorded_ms());
+        snprintf(out, out_sz, "REC %s", t);
+        *color = UI_REC_COLOR;
+        return;
+    }
+    case RECORDER_PLAYING: {
+        /* 需求：显示录音总共多少秒 + 还剩多少秒 */
+        uint32_t total_s = ceil_sec(recorder_total_ms());
+        uint32_t left_s  = ceil_sec(recorder_remaining_ms());
+        snprintf(out, out_sz, "PLAY %us left %us",
+                 (unsigned)total_s, (unsigned)left_s);
+        *color = UI_PLAY_COLOR;
+        return;
+    }
+    case RECORDER_NO_DATA:
+        snprintf(out, out_sz, "NO RECORDING");
+        *color = UI_MSG_COLOR;
+        return;
+    case RECORDER_IDLE:
+    default:
+        break;
+    }
+#endif
+    build_ssid_line(out, out_sz);
+    *color = UI_SSID_COLOR;
+}
+
 /* ==================== 刷新任务 ==================== */
 
 static void ui_render_once(void)
 {
     char line1[32];
     char line2[40];
+    uint16_t line2_color = UI_SSID_COLOR;
 
     build_time_line(line1, sizeof(line1));
-    build_ssid_line(line2, sizeof(line2));
+    build_status_line(line2, sizeof(line2), &line2_color);
 
     fb_fill(UI_BG_COLOR);
     draw_text_centered(UI_TIME_Y, line1, UI_TIME_COLOR, UI_BG_COLOR);
-    draw_text_centered(UI_SSID_Y, line2, UI_SSID_COLOR, UI_BG_COLOR);
+    draw_text_centered(UI_SSID_Y, line2, line2_color, UI_BG_COLOR);
 
     /* 整帧一次 DMA 送到屏幕，20fps 下写入窗口约 3.4ms */
     esp_err_t err = lcd_flush(0, 0, LCD_H_RES, LCD_V_RES, s_fb);

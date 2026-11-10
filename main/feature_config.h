@@ -86,3 +86,25 @@
  */
 #define APP_ENABLE_AUDIO_TEST 0
 #define APP_AUDIO_BEEP        0
+
+/* ---------------- 功能 8：录音 + 回放（BOOT 按键） ----------------
+ * 长按 BOOT(>300ms)：进入录音，松开停止。录音期间 LCD 第二行显示录音时长。
+ * 短按 BOOT(<300ms)：回放上一段录音。LCD 第二行显示总时长和剩余时长。
+ * 两种状态结束或回到空闲后，第二行恢复显示 WiFi 名称。
+ *
+ * 存储：内存缓冲，单声道 16bit/24kHz（约 48KB/s）。
+ *   优先放 PSRAM，不足则降级到内部 RAM 只留 4 秒。
+ *   REC_MAX_SECONDS 只在 PSRAM 可用时生效（8MB 可存 170+ 秒，
+ *   这里取 60 秒，留足余量给 WiFi/LCD/未来扩展）。
+ *
+ * 依赖：I2S 必须全双工（TX+RX），且录音/播放同为 24kHz
+ *       （ES8388 的 ADC/DAC 共用一对 LRCK，无法分别设采样率）。
+ */
+#define APP_ENABLE_RECORDER   1
+
+/* 按键识别 */
+#define APP_ENABLE_BUTTON     1
+#define BTN_LONG_PRESS_MS     300    /* 超过此时长判为长按（录音） */
+
+/* 单段录音上限（秒），仅 PSRAM 可用时按此值 */
+#define REC_MAX_SECONDS       60
