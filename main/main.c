@@ -94,8 +94,11 @@ void app_main(void)
 #endif
 
 #if APP_ENABLE_CODEC_REGS
-    /* 功能 6：寄存器读写验证（第 4 步）—— 开机跑一次，不发声 */
-    ESP_ERROR_CHECK(es8388_diag_run());
+    /* 功能 6：寄存器读写验证（第 4 步）—— 开机跑一次，不发声。
+     * 故意不用 ESP_ERROR_CHECK：诊断失败只告警，不能让设备陷入重启循环。 */
+    if (es8388_diag_run() != ESP_OK) {
+        ESP_LOGW(TAG, " codec register diagnostics reported failures (see above)");
+    }
 #endif
 
 #if APP_ENABLE_TF_CARD
