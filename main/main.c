@@ -48,6 +48,11 @@
 #include "es8388_diag.h"
 #endif
 
+#if APP_ENABLE_AUDIO_TEST
+#include "audio_i2s.h"
+#include "audio_test.h"
+#endif
+
 static const char *TAG = "APP";
 
 #define MAIN_LOOP_PERIOD_MS     1000  /* 主循环周期 */
@@ -58,9 +63,11 @@ void app_main(void)
     ESP_LOGI(TAG, "==================================================");
     ESP_LOGI(TAG, " ESP32-S3M-N16R8 demo project");
     ESP_LOGI(TAG, " ESP-IDF %s", esp_get_idf_version());
-    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d I2C_SCAN=%d",
+    ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d I2C_SCAN=%d "
+             "CODEC_REGS=%d AUDIO=%d/BEEP=%d",
              APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED, APP_ENABLE_LCD,
-             APP_ENABLE_I2C_SCAN);
+             APP_ENABLE_I2C_SCAN, APP_ENABLE_CODEC_REGS,
+             APP_ENABLE_AUDIO_TEST, APP_AUDIO_BEEP);
     ESP_LOGI(TAG, "==================================================");
 
 #if APP_ENABLE_WIFI
@@ -99,6 +106,13 @@ void app_main(void)
     if (es8388_diag_run() != ESP_OK) {
         ESP_LOGW(TAG, " codec register diagnostics reported failures (see above)");
     }
+#endif
+
+#if APP_ENABLE_AUDIO_TEST
+    /* 功能 7：I2S 时钟 + 喇叭验证（第 2/3/5 步）—— 内部起独立任务 */
+    ESP_ERROR_CHECK(audio_test_start());
+    ESP_LOGI(TAG, " feature 7: audio test task started (%d Hz, beep=%d)",
+             AUDIO_SAMPLE_RATE, APP_AUDIO_BEEP);
 #endif
 
 #if APP_ENABLE_TF_CARD

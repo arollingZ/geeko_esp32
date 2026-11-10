@@ -14,6 +14,7 @@
 #pragma once
 
 #include "esp_err.h"
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -53,6 +54,30 @@ esp_err_t es8388_reg_write(uint8_t reg, uint8_t val);
  * 解除后回读校验：bit7 必须为 0。
  */
 esp_err_t es8388_soft_reset(void);
+
+/*
+ * 配置为「I2S 从机 + 16bit + 播放」状态。
+ *
+ * 前提：调用前必须已做过 es8388_soft_reset()，且 I2S 主时钟已在运行
+ * （ES8388 的 ADC/DAC 依赖 MCLK，没有时钟时配置能写进去但不会工作）。
+ *
+ * 所有依赖的寄存器都显式写入，不依赖复位默认值——这是上一步 dump 出
+ * 芯片残留旧固件配置后定下的规矩。
+ */
+esp_err_t es8388_config_playback(void);
+
+/*
+ * DAC 输出级开关（R4 DACPOWER）。
+ * 配置阶段保持关闭（0xC0），等 I2S 时钟稳定且数据线上是静音后再打开，
+ * 可以避免上电瞬间的爆音。
+ */
+esp_err_t es8388_output_enable(bool on);
+
+/*
+ * 音量设置。dB 范围 -96 ~ 0，0 为最大。
+ * 数字音量（0x1A/0x1B）与模拟输出音量（0x2E~0x31）一起调整。
+ */
+esp_err_t es8388_set_volume_db(int8_t db);
 
 #ifdef __cplusplus
 }

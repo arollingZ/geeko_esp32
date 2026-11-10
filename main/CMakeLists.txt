@@ -9,8 +9,11 @@ idf_component_register(
          "codec_bus.c"
          "es8388.c"
          "es8388_diag.c"
+         "audio_i2s.c"
+         "audio_test.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_i2c
+             esp_driver_i2s
              esp_driver_spi
              esp_driver_sdspi
              esp_driver_gpio

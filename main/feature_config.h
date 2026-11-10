@@ -61,3 +61,17 @@
  * 开机跑一次，不进主循环。依赖功能 5 的 codec_bus。
  */
 #define APP_ENABLE_CODEC_REGS 1
+
+/* ---------------- 功能 7：I2S 时钟 + 喇叭播放验证（语音翻译机 第 2/3/5 步） ----------------
+ * 起独立任务：初始化 I2S 全双工（24kHz/16bit/立体声，ESP32 主、codec 从），
+ * 软复位并配置 ES8388 播放通路，打开功放（IO42 高）。
+ *
+ * 蜂鸣开关 APP_AUDIO_BEEP：
+ *   1 = 每 2s 静音后播 400ms 的 1kHz 正弦（振幅 8%，约 -22dBFS），
+ *       用于听声验证 DAC + 功放 + 喇叭；
+ *   0 = 只写静音，时钟照常运行，用于安静地量 MCLK/BCLK/WS。
+ *
+ * 注意：会真的发声。插着耳机时声音会同时进耳机。
+ */
+#define APP_ENABLE_AUDIO_TEST 1
+#define APP_AUDIO_BEEP        1
