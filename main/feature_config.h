@@ -222,3 +222,45 @@
  */
 #define APP_WIFI_TX_POWER_QDBM   40
 #define APP_WIFI_AP_BEACON_TU    1000
+
+/* ---------------- 功能 9：Opus 编码 / 解码验证（2026-11-11） ----------------
+ *
+ * 目的：把录音压成 Opus 再解回来，用设备自身验证编解码是否正确，
+ * 不依赖服务器。流程见 opus_pipeline.h。
+ *
+ * 为什么必须降到 16 kHz：
+ *   Opus 支持 8/12/16/24/48 kHz 输入，但语音翻译按宽带（16 kHz）走，
+ *   既能保住 300~7000 Hz 的语音清晰度，又把数据量压到 24k 的 2/3。
+ *   录音仍是 24 kHz（ES8388 的 ADC/DAC 共用 LRCK，不能只改一边），
+ *   所以在软件里用多相 FIR 重采样到 16 kHz（见 resampler.c）。
+ *
+ * 依赖：components/esp_audio_codec 里的预编译 libopus（esp32s3 版本）。
+ *   该库从 xiaozhi 工程的 managed_components 复制而来 —— 本机网络受限，
+ *   无法通过 IDF 组件管理器下载。只保留了 esp32s3 的库文件，
+ *   换芯片型号需要重新取库。
+ *
+ * OPUS_PRINT_PACKETS：打印多少个包的十六进制。
+ *   串口 115200 下大约 11 KB/s，一个 20ms 包约 60 字节 -> 打印成 180 字符。
+ *   打印 6 个包约 1.1 KB，耗时 0.1 秒；全打印 500 个包要 10 秒以上，
+ *   所以默认只打前几个，足够核对帧头格式。
+ *
+ * OPUS_PLAY_DECODED：解码后是否立即用喇叭播一遍（0/1）。
+ *   打开后可以用耳朵对比"短按回放录音"和"编码后解码回放"的差别。
+ *   默认关，避免验证流程意外发声。
+ */
+#define APP_ENABLE_OPUS           1
+
+/* 每次录音结束自动跑一次完整验证（会阻塞录音任务，见下方说明） */
+#define OPUS_VERIFY_ON_RECORD     1
+
+/* 开机跑一次自检（合成信号，不需要麦克风）；排查时可置 1 */
+#define OPUS_SELFTEST_ON_BOOT     0
+
+#define OPUS_SAMPLE_RATE          16000
+#define OPUS_BITRATE              24000   /* 16k 单声道语音的常用档位 */
+#define OPUS_COMPLEXITY           5       /* 0~10，越高越慢越好 */
+#define OPUS_ENABLE_VBR           0       /* 0=CBR，包长稳定，便于算带宽 */
+
+#define OPUS_PRINT_PACKETS        6
+#define OPUS_VERIFY_MAX_SECONDS   10
+#define OPUS_PLAY_DECODED         0

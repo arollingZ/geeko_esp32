@@ -31,6 +31,10 @@
 #include "wifi_mgr.h"
 #endif
 
+#if APP_ENABLE_OPUS && OPUS_VERIFY_ON_RECORD
+#include "opus_pipeline.h"
+#endif
+
 static const char *TAG = "recorder";
 
 /* 20ms 一块：够粗以保证效率，够细以及时响应停止请求 */
@@ -332,6 +336,21 @@ static void do_record_stop(void)
 
     /* 统计打的是"录进来什么样"，之后再做滤波外的整体处理 */
     postprocess_recording();
+
+#if APP_ENABLE_OPUS && OPUS_VERIFY_ON_RECORD
+    /* Opus 编解码验证：对"最终要发送的音频"（已过噪声门和归一化）做
+     * 重采样 -> 编码 -> 打印 -> 解码 -> 比对。
+     *
+     * 注意：这一步在 recorder 任务里同步执行，期间无法响应按键。
+     * 10 秒录音大约需要几百毫秒到 1~2 秒（打印十六进制占大头）。
+     * 验证阶段可以接受；正式产品应改成独立任务或直接去掉。 */
+    if (s_len_bytes >= (size_t)(AUDIO_SAMPLE_RATE / 2)) {   /* 至少 0.5 秒 */
+        opus_verify_run((const int16_t *)s_buf, s_len_bytes / 2, NULL);
+    } else {
+        ESP_LOGW(TAG, "recording too short (%u ms), skip opus verify",
+                 (unsigned)(s_len_bytes / 2 * 1000 / AUDIO_SAMPLE_RATE));
+    }
+#endif
 }
 
 /* 读一块并降混追加。返回 false 表示应该结束录音。 */

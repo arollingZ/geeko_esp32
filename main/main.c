@@ -61,6 +61,10 @@
 #include "recorder.h"
 #endif
 
+#if APP_ENABLE_OPUS && OPUS_SELFTEST_ON_BOOT
+#include "opus_pipeline.h"
+#endif
+
 #if APP_ENABLE_BUTTON
 #include "button.h"
 #endif
@@ -96,11 +100,13 @@ void app_main(void)
     ESP_LOGI(TAG, " ESP32-S3M-N16R8 demo project");
     ESP_LOGI(TAG, " ESP-IDF %s", esp_get_idf_version());
     ESP_LOGI(TAG, " features: TF_CARD=%d WIFI=%d LED=%d LCD=%d I2C_SCAN=%d "
-             "CODEC_REGS=%d AUDIO=%d/BEEP=%d RECORDER=%d BUTTON=%d",
+             "CODEC_REGS=%d AUDIO=%d/BEEP=%d RECORDER=%d BUTTON=%d "
+             "OPUS=%d/VERIFY=%d",
              APP_ENABLE_TF_CARD, APP_ENABLE_WIFI, APP_ENABLE_LED, APP_ENABLE_LCD,
              APP_ENABLE_I2C_SCAN, APP_ENABLE_CODEC_REGS,
              APP_ENABLE_AUDIO_TEST, APP_AUDIO_BEEP,
-             APP_ENABLE_RECORDER, APP_ENABLE_BUTTON);
+             APP_ENABLE_RECORDER, APP_ENABLE_BUTTON,
+             APP_ENABLE_OPUS, OPUS_VERIFY_ON_RECORD);
     ESP_LOGI(TAG, "==================================================");
 
 #if APP_ENABLE_WIFI
@@ -159,6 +165,15 @@ void app_main(void)
 #if APP_ENABLE_BUTTON && APP_ENABLE_RECORDER
     /* 功能 8：BOOT 按键（长按录音 / 短按回放） */
     ESP_ERROR_CHECK(button_init(on_button_event));
+#endif
+
+#if APP_ENABLE_OPUS && OPUS_SELFTEST_ON_BOOT
+    /* 功能 9：Opus 自检（合成信号，不需要麦克风）。
+     * 会先验重采样再验编解码，便于把两类问题分开定位。 */
+    ESP_LOGI(TAG, " feature 9: opus selftest starting");
+    if (opus_verify_selftest() != ESP_OK) {
+        ESP_LOGW(TAG, " opus selftest reported failures (see above)");
+    }
 #endif
 
 #if APP_ENABLE_TF_CARD

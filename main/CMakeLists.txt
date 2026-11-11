@@ -13,13 +13,14 @@ idf_component_register(
          "audio_test.c"
          "recorder.c"
          "button.c"
+         "resampler.c"
+         "opus_pipeline.c"
     INCLUDE_DIRS "."
     REQUIRES esp_driver_i2c
              esp_driver_i2s
              esp_driver_gpio
              esp_driver_spi
              esp_driver_sdspi
-             esp_driver_gpio
              esp_lcd
              sdmmc
              fatfs
@@ -32,4 +33,5 @@ idf_component_register(
              esp_netif
              esp_http_server
              esp_http_client
+             esp_audio_codec
 )
